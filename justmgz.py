@@ -12,8 +12,29 @@ WSL_APP = "/opt/justmgz/app"
 PORT = 8099
 RUNSERVER = ("env TR4MPASS_DIR=%s python3 %s/justmgz-engine.py" % (WSL_ENGINE, WSL_APP))
 
+DIAG = []
+
 def log(msg=""):
     print(msg, flush=True)
+
+def note(msg):
+    DIAG.append(str(msg))
+
+def write_diag():
+    try:
+        import datetime
+        path = os.path.join(os.path.expanduser("~"), "justmgz-diag.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("justmgz diagnostic log\n")
+            f.write("time: %s\n" % datetime.datetime.now().isoformat(timespec="seconds"))
+            f.write("=" * 60 + "\n")
+            f.write("\n".join(DIAG))
+        log("")
+        log("  diagnostic file: %s" % path)
+        return path
+    except Exception as e:
+        log("  could not write diagnostic file: %s" % e)
+        return ""
 
 def is_admin():
     try:
@@ -41,6 +62,8 @@ def run(args, timeout=None, quiet=False):
         return 127, "not found: %s" % args[0]
     except Exception as e:
         return 1, str(e)
+    note("> " + " ".join(args))
+    note("  rc=%d  out=%s" % (p.returncode, txt[:600].replace("\n", "\\n")))
     if not quiet and txt:
         log(txt)
     return p.returncode, txt
@@ -72,6 +95,13 @@ def usbipd_devices():
                 found.append(parts[0])
     return found
 
+def apple_on_windows():
+    cmd = ("Get-PnpDevice -PresentOnly | Where-Object { $_.FriendlyName -match 'Apple' } "
+           "| Select-Object -First 8 Status,FriendlyName | Format-Table -AutoSize | Out-String")
+    rc, out = run(["powershell", "-NoProfile", "-Command", cmd], quiet=True)
+    note("apple devices on windows:\n" + out)
+    return out.strip()
+
 def ensure_usb(wait=0):
     p = usbipd_path()
     if not p:
@@ -84,19 +114,35 @@ def ensure_usb(wait=0):
             log("  could not install usbipd")
             return False
 
+    note("usbipd: " + str(p))
+    rc, ver = run([p, "version"], quiet=True)
+    note("usbipd version: " + ver)
+    rc, lst = run([p, "list"], quiet=True)
+    note("usbipd list before:\n" + lst)
+
     deadline = time.time() + wait
     while True:
         devs = usbipd_devices()
         if devs:
             busid = devs[0]
-            run([p, "bind", "--busid", busid], quiet=True)
-            run([p, "attach", "--wsl", "--busid", busid], quiet=True)
-            time.sleep(1.5)
-            rc, out = run([p, "list"], quiet=True)
-            for line in out.splitlines():
-                if busid in line and "attached" in line.lower():
+            rc, bo = run([p, "bind", "--busid", busid], quiet=True)
+            note("bind rc=%d out=%s" % (rc, bo))
+            attached = False
+            for attempt in range(3):
+                rc, ao = run([p, "attach", "--wsl", "--busid", busid], quiet=True)
+                note("attach try %d rc=%d out=%s" % (attempt + 1, rc, ao))
+                time.sleep(2.0)
+                rc, out = run([p, "list"], quiet=True)
+                note("usbipd list after try %d:\n%s" % (attempt + 1, out))
+                for line in out.splitlines():
+                    if busid in line and "attached" in line.lower():
+                        attached = True
+                        break
+                if attached:
                     log("  iPhone passed to Ubuntu  (%s)" % busid)
                     return True
+                run([p, "detach", "--busid", busid], quiet=True)
+                time.sleep(1.0)
             log("  found iPhone on %s but attach failed" % busid)
             log("  open an elevated PowerShell and run: usbipd attach --wsl --busid %s" % busid)
             return False
@@ -143,6 +189,21 @@ def main():
 
     if "--selftest" in sys.argv:
         return selftest()
+
+    if "--diag" in sys.argv:
+        note("mode: diag")
+        p = usbipd_path()
+        note("usbipd path: %s" % p)
+        if p:
+            rc, out = run([p, "list"], quiet=True)
+            note("usbipd list:\n" + out)
+        rc, out = wsl("-u", "root", "-e", "lsusb", quiet=True)
+        note("lsusb:\n" + out)
+        rc, out = wsl("-u", "root", "-e", "bash", "-lc", "cd %s && ./tr4mpass -d 2>&1 | head -40" % WSL_ENGINE, quiet=True)
+        note("tr4mpass -d:\n" + out)
+        write_diag()
+        input("Press Enter to close...")
+        return 0
 
     if not is_admin():
         log("")
@@ -214,10 +275,25 @@ def main():
     log("  plug your iPhone now if it is not connected (waiting up to 45s)")
     if not ensure_usb(wait=45):
         log("")
-        log("  no iPhone passed through yet.")
+        win = apple_on_windows()
+        if not win:
+            log("  Windows itself does not see any Apple device.")
+            log("  Fix: install 'Apple Devices' from the Microsoft Store (it installs the USB driver),")
+            log("  or use a different cable/port, then run this file again.")
+        else:
+            log("  Windows sees: " + win.replace("\n", " | ")[:200])
+        log("")
         log("  the panel will still open - plug the phone, then run this file again,")
         log("  or run: usbipd attach --wsl --busid <id>   (after: usbipd list)")
     log("")
+
+    # diagnostics for the device side
+    rc, ls = wsl("-u", "root", "-e", "lsusb", quiet=True)
+    note("lsusb inside ubuntu:\n" + ls)
+    if "apple" not in ls.lower():
+        log("  note: no Apple device inside Ubuntu yet")
+    rc, dv = wsl("-u", "root", "-e", "bash", "-lc", "cd %s && ./tr4mpass -d 2>&1 | head -40" % WSL_ENGINE, quiet=True)
+    note("tr4mpass -d:\n" + dv)
 
     # 5 - server
     step(7, "starting the panel")
@@ -246,10 +322,12 @@ def main():
         except Exception:
             pass
         log("")
+        write_diag()
         log("  Try:  wsl --shutdown   then run this file again")
         input("  Press Enter to close...")
         return 1
 
+    write_diag()
     webbrowser.open("http://127.0.0.1:%d/" % PORT)
     log("")
     log("=" * 52)
