@@ -114,6 +114,34 @@ def apple_on_windows():
     note("apple devices on windows:\n" + out)
     return out.strip()
 
+
+def wsl_distro():
+    rc, out = run(["wsl.exe", "-e", "bash", "-lc", "echo $WSL_DISTRO_NAME"], quiet=True)
+    return out.strip() if rc == 0 else ""
+
+def wsl_version():
+    rc, out = run(["wsl.exe", "-l", "-v"], quiet=True)
+    txt = out.replace("\x00", "")
+    for line in txt.splitlines():
+        low = line.lower()
+        if "ubuntu" in low or "default" in low:
+            parts = line.split()
+            for p in parts:
+                if p.strip() in ("1", "2"):
+                    return p.strip()
+    return "?"
+
+def install_apple_driver():
+    log("  Windows cannot see the iPhone -> installing the Apple USB driver...")
+    rc, out = run(["winget", "install", "--exact", "--silent",
+                   "--accept-package-agreements", "--accept-source-agreements",
+                   "--source", "msstore", "9NP83LWLPZ9K"], timeout=900, quiet=True)
+    note("apple driver winget rc=%d" % rc)
+    if rc != 0:
+        log("  opening Microsoft Store page for Apple Devices...")
+        run(["cmd", "/c", "start", "", "ms-windows-store://pdp/?productid=9NP83LWLPZ9K"], quiet=True)
+    return rc == 0
+
 def ensure_usb(wait=0):
     p = usbipd_path()
     if not p:
@@ -132,7 +160,16 @@ def ensure_usb(wait=0):
     rc, lst = run([p, "list"], quiet=True)
     note("usbipd list before:\n" + lst)
 
+    distro = wsl_distro()
+    note("wsl distro: %s version: %s" % (distro, wsl_version()))
+    if wsl_version() == "1":
+        log("  WSL1 detected - USB passthrough needs WSL2.")
+        log("  run: wsl --set-version %s 2" % (distro or "<distro>"))
+        return False
+    log("  ubuntu distro: %s" % (distro or "default"))
+
     deadline = time.time() + wait
+    tried_driver = False
     while True:
         devs = usbipd_devices()
         if devs:
@@ -141,7 +178,8 @@ def ensure_usb(wait=0):
             note("bind rc=%d out=%s" % (rc, bo))
             attached = False
             for attempt in range(3):
-                rc, ao = run([p, "attach", "--wsl", "--busid", busid], quiet=True)
+                cmd = [p, "attach", "--wsl"] + (["--distribution", distro] if distro else []) + ["--busid", busid]
+                rc, ao = run(cmd, quiet=True)
                 note("attach try %d rc=%d out=%s" % (attempt + 1, rc, ao))
                 time.sleep(2.0)
                 rc, out = run([p, "list"], quiet=True)
@@ -159,6 +197,12 @@ def ensure_usb(wait=0):
             log("  open an elevated PowerShell and run: usbipd attach --wsl --busid %s" % busid)
             return False
         if time.time() > deadline:
+            if not tried_driver:
+                tried_driver = True
+                install_apple_driver()
+                deadline = time.time() + 40
+                log("  re-scanning for the iPhone...")
+                continue
             return False
         sys.stdout.write(".")
         sys.stdout.flush()
