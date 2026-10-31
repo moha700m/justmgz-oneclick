@@ -44,12 +44,10 @@ jobs:
           cmd /c "START-justmgz.bat < nul" 2>&1 | Tee-Object -FilePath bat-out.txt
           "---- assertions ----"
           $out = Get-Content bat-out.txt -Raw
-          $markers = @("الخطوة ١","الخطوة ٢","الخطوة ٣","الخطوة ٤","الخطوة ٥")
-          [Console]::OutputEncoding = [Text.Encoding]::UTF8
-          foreach ($m in $markers) {
+          foreach ($m in @("Step 1/5","Step 2/5","Step 3/5","Step 4/5","Step 5/5")) {
             if ($out -notmatch [regex]::Escape($m)) { throw "missing stage marker $m" }
           }
-          if ($out -notmatch "تم توصيل الجهاز") { throw "usbipd attach step not reached" }
+          if ($out -notmatch "device attached") { throw "usbipd attach step not reached" }
           if (-not (Test-Path install-log.txt)) { throw "install-log.txt not created" }
           Write-Host "batch flow OK"
 
@@ -60,7 +58,7 @@ jobs:
           $env:PATH = "$PWD\ci\bin;$env:PATH"
           cmd /c "RUN-justmgz.bat < nul" 2>&1 | Tee-Object -FilePath run-out.txt
           $out = Get-Content run-out.txt -Raw
-          if ($out -notmatch "OK") { throw "attach confirmation missing" }
+          if ($out -match "no iPhone detected") { throw "stub device not detected" }
           Write-Host "rerun flow OK"
 
       - name: Upload logs

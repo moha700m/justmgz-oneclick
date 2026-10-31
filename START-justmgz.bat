@@ -1,192 +1,180 @@
 @echo off
-chcp 65001 >nul
-setlocal EnableDelayedExpansion
-title justmgz — التثبيت والتشغيل
+setlocal
+title justmgz installer
 cd /d "%~dp0"
 set "LOG=%~dp0install-log.txt"
 set "APTLOCAL=%TEMP%\justmgz-apt.log"
 echo. > "%LOG%"
 
-if defined JUSTMGZ_NOELEV goto :after_elev
+if defined JUSTMGZ_NOELEV goto after_elev
 net session >nul 2>&1
 if errorlevel 1 (
   echo.
-  echo   هذا الملف يحتاج صلاحيات مسؤول.
-  echo   بتطلع لك نافذة — اضغط "نعم".
+  echo   Admin rights needed. Press "Yes" in the window that appears.
   powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
   exit /b
 )
 :after_elev
 
 call :line
-call :say "  justmgz — التثبيت التلقائي"
-call :say "  (المرة الأولى فقط)"
+echo   justmgz - automatic setup  ^(first run only^)
 call :line
-call :say ""
+echo.
 
 where wsl >nul 2>&1
-if errorlevel 1 goto :NO_WSL
+if errorlevel 1 goto NO_WSL
 
 wsl -u root -e true >nul 2>&1
-if errorlevel 1 goto :NO_DISTRO
+if errorlevel 1 goto NO_DISTRO
 
-call :say "الخطوة ١ من ٥ — نحدد مكان الملفات"
+echo Step 1/5 - locating files
 set "WPATH="
 for /f "usebackq delims=" %%p in (`wsl -u root wslpath -a "%CD%"`) do set "WPATH=%%p"
-if not defined WPATH goto :ERR_PATH
-call :say "   جاهز"
-call :say ""
+if not defined WPATH goto ERR_PATH
+echo    ok
+echo.
 
-call :say "الخطوة ٢ من ٥ — نثبت مكتبات النظام"
-call :say "   (تاخذ من دقيقة إلى ثلاث)"
+echo Step 2/5 - installing system libraries  ^(1-3 min^)
 wsl -u root -e bash -lc "apt-get update > /tmp/justmgz-apt.log 2>&1; apt-get install -y build-essential git pkg-config python3 libimobiledevice-dev libirecovery-1.0-dev libusb-1.0-0-dev libplist-dev libcurl4-openssl-dev libssl-dev libssh2-1-dev libusbmuxd-dev psmisc >> /tmp/justmgz-apt.log 2>&1; echo $? > /tmp/justmgz-apt.rc" >nul 2>&1
 
 set "APT_RC="
 for /f "usebackq delims=" %%r in (`wsl -u root -e cat /tmp/justmgz-apt.rc 2^>nul`) do set "APT_RC=%%r"
+if not defined APT_RC goto apt_unknown
+if "%APT_RC%"=="0" goto apt_done
+goto apt_fail
 
-if not defined APT_RC (
-  call :say "   ما قدرنا نقرأ نتيجة التثبيت — نكمل ونتأكد وقت البناء"
-  goto :apt_done
-)
-if "!APT_RC!"=="0" (
-  call :say "   تم"
-  goto :apt_done
-)
-
-call :say "   تعذّر التثبيت — نشوف السبب"
-wsl -u root -e cat /tmp/justmgz-apt.log > "%APTLOCAL%" 2>nul
-if exist "%APTLOCAL%" type "%APTLOCAL%" >> "%LOG%"
-
-findstr /i /c:"Could not get lock" "%APTLOCAL%" >nul 2>&1
-if not errorlevel 1 (
-  call :say "   السبب: برنامج ثاني يحدّث النظام داخل أوبنتو."
-  call :say "   سكّر أي نافذة أوبنتو مفتوحة، واستنى دقيقة، وشغّل الملف مرة ثانية."
-  goto :ERR_APT
-)
-
-findstr /i /c:"Temporary failure resolving" "%APTLOCAL%" >nul 2>&1
-if not errorlevel 1 (
-  call :say "   السبب: أوبنتو ما توصل للإنترنت."
-  call :say "   افتح أوبنتو واكتب: ping google.com"
-  call :say "   إذا ما رد، الإنترنت عندك محجوب عن WSL (VPN أو فلتر)."
-  goto :ERR_APT
-)
-
-findstr /i /c:"Unable to locate package" "%APTLOCAL%" >nul 2>&1
-if not errorlevel 1 (
-  call :say "   السبب: نسخة أوبنتو عندك ما فيها المستودع المطلوب."
-  call :say "   نحاول نفعّل المستودع ونعيد المحاولة..."
-  wsl -u root -e bash -lc "apt-get install -y software-properties-common >/dev/null 2>&1; add-apt-repository -y universe >>/tmp/justmgz-apt.log 2>&1; apt-get update >>/tmp/justmgz-apt.log 2>&1; apt-get install -y build-essential git pkg-config python3 libimobiledevice-dev libirecovery-1.0-dev libusb-1.0-0-dev libplist-dev libcurl4-openssl-dev libssl-dev libssh2-1-dev libusbmuxd-dev psmisc >>/tmp/justmgz-apt.log 2>&1; echo $? > /tmp/justmgz-apt.rc" >nul 2>&1
-  set "APT_RC2="
-  for /f "usebackq delims=" %%r in (`wsl -u root -e cat /tmp/justmgz-apt.rc 2^>nul`) do set "APT_RC2=%%r"
-  if "!APT_RC2!"=="0" (
-    call :say "   نجحت المحاولة الثانية"
-    goto :apt_done
-  )
-  call :say "   برضه فشلت — التفاصيل في ملف install-log.txt"
-  goto :ERR_APT
-)
-
-call :say "   صار خطأ غير متوقع في التثبيت."
-call :say "   التفاصيل في install-log.txt — أرسله لي وأصلحه."
-goto :ERR_APT
+:apt_unknown
+echo    could not read install result - continuing
+goto do_build
 
 :apt_done
-call :say ""
+echo    ok
+goto do_build
 
-call :say "الخطوة ٣ من ٥ — ننزل المحرك ونبنيه"
-call :say "   (تاخذ من دقيقتين إلى خمس)"
+:apt_fail
+echo    install failed - checking the reason
+wsl -u root -e cat /tmp/justmgz-apt.log > "%APTLOCAL%" 2>nul
+if exist "%APTLOCAL%" type "%APTLOCAL%" >> "%LOG%"
+findstr /i /c:"Could not get lock" "%APTLOCAL%" >nul 2>&1
+if not errorlevel 1 goto diag_lock
+findstr /i /c:"Temporary failure resolving" "%APTLOCAL%" >nul 2>&1
+if not errorlevel 1 goto diag_net
+findstr /i /c:"Unable to locate package" "%APTLOCAL%" >nul 2>&1
+if not errorlevel 1 goto diag_universe
+
+echo    unknown apt error - see install-log.txt
+goto ERR_APT
+
+:diag_lock
+echo    REASON: another program is updating Ubuntu.
+echo    Close any Ubuntu window, wait a minute, run this file again.
+goto ERR_APT
+
+:diag_net
+echo    REASON: Ubuntu has no internet.
+echo    Open Ubuntu and run: ping google.com
+goto ERR_APT
+
+:diag_universe
+echo    REASON: package repo is missing. Enabling universe and retrying...
+wsl -u root -e bash -lc "apt-get install -y software-properties-common >/dev/null 2>&1; add-apt-repository -y universe >>/tmp/justmgz-apt.log 2>&1; apt-get update >>/tmp/justmgz-apt.log 2>&1; apt-get install -y build-essential git pkg-config python3 libimobiledevice-dev libirecovery-1.0-dev libusb-1.0-0-dev libplist-dev libcurl4-openssl-dev libssl-dev libssh2-1-dev libusbmuxd-dev psmisc >>/tmp/justmgz-apt.log 2>&1; echo $? > /tmp/justmgz-apt.rc" >nul 2>&1
+set "APT_RC2="
+for /f "usebackq delims=" %%r in (`wsl -u root -e cat /tmp/justmgz-apt.rc 2^>nul`) do set "APT_RC2=%%r"
+if "%APT_RC2%"=="0" goto apt_retry_ok
+echo    retry failed - see install-log.txt
+goto ERR_APT
+
+:apt_retry_ok
+echo    ok on second attempt
+goto do_build
+
+:do_build
+echo.
+echo Step 3/5 - downloading engine and building  ^(2-5 min^)
 wsl -u root -e bash -lc "set -e; mkdir -p /opt/justmgz; if [ ! -d /opt/justmgz/eng/.git ]; then git clone --depth 1 https://github.com/tr4m0ryp/tr4mpass /opt/justmgz/eng; fi; cd /opt/justmgz/eng; if [ ! -f .patched ]; then patch -p1 < '%WPATH%/app/fix-build.patch'; touch .patched; fi; make -j4" >> "%LOG%" 2>&1
-if errorlevel 1 goto :ERR_BUILD
+if errorlevel 1 goto ERR_BUILD
 wsl -u root -e bash -lc "mkdir -p /opt/justmgz/app && cp -f '%WPATH%/app/'* /opt/justmgz/app/" >> "%LOG%" 2>&1
-call :say "   تم — المحرك جاهز"
-call :say ""
+echo    engine ready
+echo.
 
-call :say "الخطوة ٤ من ٥ — نجهز توصيل الآيفون"
+echo Step 4/5 - preparing iPhone USB passthrough
 set "USBIPD=usbipd"
 where usbipd >nul 2>&1
-if errorlevel 1 (
-  call :say "   نثبت أداة تمرير USB..."
-  winget install --exact --silent --accept-package-agreements --accept-source-agreements dorssel.usbipd-win >> "%LOG%" 2>&1
-  if exist "%ProgramFiles%\usbipd-win\usbipd.exe" set "USBIPD=%ProgramFiles%\usbipd-win\usbipd.exe"
-)
+if not errorlevel 1 goto have_usbipd
+echo    installing usbipd...
+winget install --exact --silent --accept-package-agreements --accept-source-agreements dorssel.usbipd-win >> "%LOG%" 2>&1
+if exist "%ProgramFiles%\usbipd-win\usbipd.exe" set "USBIPD=%ProgramFiles%\usbipd-win\usbipd.exe"
+:have_usbipd
 set "BUSID="
-"!USBIPD!" list > "%TEMP%\justmgz-usb.txt" 2>nul
+"%USBIPD%" list > "%TEMP%\justmgz-usb.txt" 2>nul
 for /f "tokens=1" %%b in ('findstr /i "Apple" "%TEMP%\justmgz-usb.txt"') do if not defined BUSID set "BUSID=%%b"
-if not defined BUSID (
-  call :say "   ما لقينا آيفون موصول — وصله بالكيبل بعدين شغّل RUN-justmgz.bat"
-) else (
-  "!USBIPD!" bind --busid !BUSID! >nul 2>&1
-  "!USBIPD!" attach --wsl --busid !BUSID! >nul 2>&1
-  call :say "   تم توصيل الجهاز"
-)
-call :say ""
+if defined BUSID goto do_attach
+echo    no iPhone detected - plug it in, then run RUN-justmgz.bat
+goto start_panel
 
-call :say "الخطوة ٥ من ٥ — نشغل اللوحة"
+:do_attach
+"%USBIPD%" bind --busid %BUSID% >nul 2>&1
+"%USBIPD%" attach --wsl --busid %BUSID% >nul 2>&1
+echo    device attached (%BUSID%)
+
+:start_panel
+echo.
+echo Step 5/5 - starting the panel
 wsl -u root -e bash -lc "fuser -k 8099/tcp 2>/dev/null; sleep 1; setsid nohup env TR4MPASS_DIR=/opt/justmgz/eng python3 /opt/justmgz/app/justmgz-engine.py > /tmp/justmgz.log 2>&1 < /dev/null &" >nul 2>&1
 powershell -NoProfile -Command "$i=0; while($i -lt 12){ try{ $c=New-Object Net.Sockets.TcpClient('127.0.0.1',8099); $c.Close(); exit 0 }catch{ Start-Sleep -Milliseconds 500; $i++ } }; exit 1" >nul 2>&1
 start "" "http://127.0.0.1:8099"
 
 echo.
 call :line
-call :say "  خلص — المتصفح يفتح على اللوحة"
-call :say "  اضغط الزر: ابدأ — وخله علينا"
+echo   done - the panel is opening in your browser
+echo   press the big button: start
 call :line
 echo.
-call :say "المرة القادمة: دبل كلك على RUN-justmgz.bat"
+echo Next time: double click RUN-justmgz.bat
 echo.
 pause
 exit /b
 
 :NO_WSL
-call :say ""
-call :say "ويندوز عندك ما فيه WSL."
-call :say "بنثبته لك الآن — وبيطلب منك إعادة تشغيل الجهاز مرة وحدة."
-call :say ""
+echo.
+echo WSL is not installed. Installing it now...
 wsl --install -d Ubuntu
-call :say ""
-call :say "بعد إعادة التشغيل: شغّل هذا الملف مرة ثانية."
+echo.
+echo Restart Windows once, then run this file again.
 pause
 exit /b
 
 :NO_DISTRO
-call :say ""
-call :say "WSL موجود، بس ما فيه أوبنتو مثبت."
-call :say "بننزله لك الآن..."
+echo.
+echo WSL found but no Ubuntu distro. Installing Ubuntu...
 wsl --install -d Ubuntu
-call :say ""
-call :say "بعد ما يخلص: افتح أوبنتو مرة وحدة، وبعدها شغّل هذا الملف."
+echo.
+echo After it finishes: open Ubuntu once, then run this file again.
 pause
 exit /b
 
 :ERR_PATH
-call :say ""
-call :say "ما قدرنا نحدد مسار المجلد."
-call :say "انقل الملفات لمجلد بسيط بدون مسافات، مثل: C:\justmgz"
+echo.
+echo Could not resolve the folder path.
+echo Move the files to a simple folder like C:\justmgz and try again.
 pause
 exit /b
 
 :ERR_APT
-call :say ""
-call :say "توقفنا عند تثبيت المكتبات."
-call :say "ملف install-log.txt فيه التفاصيل كاملة."
+echo.
+echo Stopped at system libraries. Details: install-log.txt
 pause
 exit /b
 
 :ERR_BUILD
-call :say ""
-call :say "توقفنا عند بناء المحرك."
-call :say "الأسباب الشائعة: المكتبات ناقصة، أو ما فيه إنترنت داخل أوبنتو."
-call :say "التفاصيل في install-log.txt"
+echo.
+echo Stopped at engine build.
+echo Common causes: missing libraries, or no internet inside Ubuntu.
+echo Details: install-log.txt
 pause
 exit /b
 
 :line
 echo ============================================
 >>"%LOG%" echo ============================================
-exit /b
-
-:say
-echo %~1
->>"%LOG%" echo %~1
 exit /b
