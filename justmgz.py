@@ -51,9 +51,64 @@ def wsl(*args, timeout=None, quiet=False):
 def wsl_bash(script, timeout=None, quiet=False):
     return run(["wsl.exe", "-u", "root", "-e", "bash", "-lc", script], timeout=timeout, quiet=quiet)
 
+
+def usbipd_path():
+    for c in (r"C:\Program Files\usbipd-win\usbipd.exe",):
+        if os.path.isfile(c):
+            return c
+    rc, _ = run(["where", "usbipd"], quiet=True)
+    return "usbipd" if rc == 0 else None
+
+def usbipd_devices():
+    p = usbipd_path()
+    if not p:
+        return []
+    rc, out = run([p, "list"], quiet=True)
+    found = []
+    for line in out.splitlines():
+        if "apple" in line.lower():
+            parts = line.split()
+            if parts:
+                found.append(parts[0])
+    return found
+
+def ensure_usb(wait=0):
+    p = usbipd_path()
+    if not p:
+        log("  usbipd not installed - installing...")
+        run(["winget", "install", "--exact", "--silent",
+             "--accept-package-agreements", "--accept-source-agreements",
+             "dorssel.usbipd-win"], timeout=900, quiet=True)
+        p = usbipd_path()
+        if not p:
+            log("  could not install usbipd")
+            return False
+
+    deadline = time.time() + wait
+    while True:
+        devs = usbipd_devices()
+        if devs:
+            busid = devs[0]
+            run([p, "bind", "--busid", busid], quiet=True)
+            run([p, "attach", "--wsl", "--busid", busid], quiet=True)
+            time.sleep(1.5)
+            rc, out = run([p, "list"], quiet=True)
+            for line in out.splitlines():
+                if busid in line and "attached" in line.lower():
+                    log("  iPhone passed to Ubuntu  (%s)" % busid)
+                    return True
+            log("  found iPhone on %s but attach failed" % busid)
+            log("  open an elevated PowerShell and run: usbipd attach --wsl --busid %s" % busid)
+            return False
+        if time.time() > deadline:
+            return False
+        sys.stdout.write(".")
+        sys.stdout.flush()
+        time.sleep(2)
+
 def step(n, text):
     log("")
-    log("Step %d/6 - %s" % (n, text))
+    log("Step %d/7 - %s" % (n, text))
 
 def fail(title, hint=""):
     log("")
@@ -154,8 +209,18 @@ def main():
             log("  warning: could not copy %s" % f.name)
     log("  ok")
 
-    # 4 - server
-    step(6, "starting the panel")
+    # 4 - usb passthrough
+    step(6, "passing the iPhone to Ubuntu")
+    log("  plug your iPhone now if it is not connected (waiting up to 45s)")
+    if not ensure_usb(wait=45):
+        log("")
+        log("  no iPhone passed through yet.")
+        log("  the panel will still open - plug the phone, then run this file again,")
+        log("  or run: usbipd attach --wsl --busid <id>   (after: usbipd list)")
+    log("")
+
+    # 5 - server
+    step(7, "starting the panel")
     wsl_bash("fuser -k %d/tcp 2>/dev/null" % PORT, quiet=True)
     time.sleep(1)
     proc = subprocess.Popen(["wsl.exe", "-u", "root", "-e", "bash", "-lc", RUNSERVER],
