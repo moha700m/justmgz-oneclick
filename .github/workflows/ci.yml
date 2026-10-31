@@ -49,7 +49,7 @@ jobs:
           foreach ($m in $markers) {
             if ($out -notmatch [regex]::Escape($m)) { throw "missing stage marker $m" }
           }
-          if ($out -notmatch "3-1") { throw "usbipd busid not detected" }
+          if ($out -notmatch "تم توصيل الجهاز") { throw "usbipd attach step not reached" }
           if (-not (Test-Path install-log.txt)) { throw "install-log.txt not created" }
           Write-Host "batch flow OK"
 
