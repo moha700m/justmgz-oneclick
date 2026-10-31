@@ -25,20 +25,37 @@ jobs:
       - name: Python bridge compiles on Windows
         run: python -m py_compile app/justmgz-engine.py
 
-      - name: Debug run (echo on)
+      - name: Build stub executables (wsl/usbipd/winget)
         shell: pwsh
         run: |
-          $env:JUSTMGZ_NOELEV = "1"
-          $env:JUSTMGZ_DEBUG = "1"
-          $env:PATH = "$PWD\ci\stubs;$env:PATH"
-          cmd /c "START-justmgz.bat < nul" 2>&1 | Tee-Object -FilePath debug-run.txt
-        continue-on-error: true
+          foreach ($n in @("wsl","usbipd","winget")) {
+            $cls = "Stub_" + $n
+            $code = @"
+          using System;
+          class $cls {
+            static int Main(string[] a) {
+              string s = string.Join(" ", a);
+              if (s.StartsWith("-u root wslpath")) { Console.WriteLine("/mnt/c/actions/justmgz-oneclick"); return 0; }
+              if (s == "-u root -e true") return 0;
+              if (a.Length > 0 && a[0] == "list") {
+                Console.WriteLine("BUSID  VID:PID    DEVICE                        STATE");
+                Console.WriteLine("3-1    05ac:12a8  Apple Inc. iPhone             Not shared");
+                return 0;
+              }
+              Console.WriteLine("[stub] " + s);
+              return 0;
+            }
+          }
+"@
+            Add-Type -TypeDefinition $code -OutputAssembly "$PWD\ci\bin\$n.exe" -OutputType ConsoleApplication
+          }
+          dir ci\bin
 
       - name: Run START-justmgz.bat with stubs (no WSL needed)
         shell: pwsh
         run: |
           $env:JUSTMGZ_NOELEV = "1"
-          $env:PATH = "$PWD\ci\stubs;$env:PATH"
+          $env:PATH = "$PWD\ci\bin;$env:PATH"
           cmd /c "START-justmgz.bat < nul" 2>&1 | Tee-Object -FilePath bat-out.txt
           "---- assertions ----"
           $out = Get-Content bat-out.txt -Raw
