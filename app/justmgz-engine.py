@@ -128,6 +128,22 @@ body{
 .hint{text-align:center;color:var(--mut);font-size:13px;margin:var(--s2) 0 var(--s5)}
 /* ---------- numbers ---------- */
 
+
+.dh{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.dh h2{margin:0;flex:1}
+.mini{font-size:12px;padding:7px 12px;border-radius:9px;border:1px solid var(--line);
+  background:#0b1219;color:var(--txt);font-family:inherit;font-weight:700;cursor:pointer}
+.mini:hover{border-color:#2a6b8a}
+.dl{display:flex;flex-direction:column;gap:9px}
+.di{display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border-radius:11px;background:#0b1219;border:1px solid #16212b}
+.di .ic{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:800;flex:none}
+.di.ok .ic{background:#0f3327;color:#4ade9c}
+.di.warn .ic{background:#332a12;color:#f5c66b}
+.di.fail .ic{background:#331717;color:#f08c8c}
+.di .l{font-size:13.5px;font-weight:700;line-height:1.4}
+.di .d{font-size:12px;color:var(--mut);line-height:1.5}
+.di .fx{font-size:12px;color:#f5c66b;line-height:1.5;margin-top:2px}
+
 .dev{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--line);
   border-radius:16px;padding:14px 16px;margin:0 0 14px;transition:border-color .2s}
 .dev.on{border-color:#1c5c45;background:#0d2119}
@@ -207,6 +223,14 @@ footer{margin-top:var(--s5);padding-top:var(--s3);border-top:1px solid var(--lin
       <span id="devSub">وصّل الآيفون بالكيبل — يكشفه لحاله</span>
     </div>
     <span class="mode" id="devMode">—</span>
+  </div>
+
+  <div class="card" id="diagCard">
+    <div class="dh">
+      <h2>فحص شامل</h2>
+      <button class="mini" id="diagBtn" type="button">أعد الفحص</button>
+    </div>
+    <div class="dl" id="diagList"><div class="di">جاري الفحص…</div></div>
   </div>
 
   <button class="start" id="start" disabled>
@@ -452,6 +476,34 @@ function devPoll(){
 
 devPoll(); setInterval(devPoll, 3000);
 
+function diagRender(items){
+  var box=document.getElementById("diagList");
+  box.innerHTML="";
+  items.forEach(function(it){
+    var d=document.createElement("div");
+    d.className="di "+it.status;
+    var icon = it.status==="ok" ? "✓" : (it.status==="fail" ? "✕" : "!");
+    var h = '<div class="ic">'+icon+'</div><div><div class="l">'+it.label+'</div>';
+    if(it.detail) h += '<div class="d">'+it.detail+'</div>';
+    if(it.fix && it.status!=="ok") h += '<div class="fx">'+it.fix+'</div>';
+    h += '</div>';
+    d.innerHTML=h;
+    box.appendChild(d);
+  });
+}
+
+function runDiag(){
+  var box=document.getElementById("diagList");
+  box.innerHTML='<div class="di diisabled">جاري الفحص…</div>';
+  fetch("/api/diag",{cache:"no-store"}).then(function(r){return r.json()})
+    .then(function(d){ diagRender(d.items||[]); })
+    .catch(function(){ box.innerHTML='<div class="di fail"><div class="ic">✕</div><div><div class="l">ما قدرنا نفحص</div><div class="d">الجسر ما رد</div></div></div>'; });
+}
+
+document.getElementById("diagBtn").addEventListener("click", runDiag);
+runDiag();
+
+
 S.el.start.addEventListener("click", start);
 refreshState().catch(function(){ verdict("err","الجسر ما اشتغل","تأكد إن البرنامج شغال على 127.0.0.1."); });
 </script>
@@ -498,6 +550,81 @@ def probe_device(force=False):
     DEV_CACHE.update(t=now, v=result)
     return result
 
+
+def _cmd(args, timeout=25):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
+    except FileNotFoundError:
+        return 127, "not found: %s" % args[0]
+    except Exception as ex:
+        return 1, str(ex)
+
+def diag():
+    items = []
+    def add(key, label, status, detail, fix=""):
+        items.append({"key": key, "label": label, "status": status, "detail": detail, "fix": fix})
+
+    # 1 engine
+    exists = os.path.isfile(BIN) and os.access(BIN, os.X_OK)
+    add("engine", "محرك الفتح", "ok" if exists else "fail",
+        ("موجود · v" + engine_version()) if exists else "غير موجود: " + BIN,
+        "" if exists else "شغّل justmgz.exe بصلاحيات مسؤول لين يبنيه")
+
+    # 2 libs
+    miss = missing_libs() if exists else []
+    add("libs", "مكتبات النظام", "ok" if not miss else "fail",
+        "كلها موجودة" if not miss else "%d ناقصة" % len(miss),
+        "" if not miss else "أعد تشغيل justmgz.exe")
+
+    # 3 python
+    add("python", "بايثون داخل أوبنتو", "ok", sys.version.split()[0])
+
+    # 4 usbipd (windows interop)
+    rc, out = _cmd(["usbipd.exe", "list"])
+    if rc == 127:
+        add("usbipd", "أداة تمرير USB", "fail", "usbipd غير مثبت",
+            "شغّل justmgz.exe بصلاحيات مسؤول — يثبته تلقائياً")
+    else:
+        has_apple = "apple" in out.lower()
+        add("usbipd", "أداة تمرير USB", "ok" if rc == 0 else "warn",
+            ("تعمل · " + ("تشوف آيفون" if has_apple else "ما تشوف آيفون")) if rc == 0 else "خطأ في التشغيل",
+            "" if has_apple else "وصّل الآيفون بكيبل أصلي وشغّل justmgz.exe من جديد")
+
+    # 5 windows driver
+    ps = ("Get-PnpDevice -PresentOnly | Where-Object { $_.FriendlyName -match 'Apple' } "
+          "| Select-Object -First 3 Status,FriendlyName | Out-String")
+    rc2, out2 = _cmd(["powershell.exe", "-NoProfile", "-Command", ps])
+    if rc2 == 127:
+        add("driver", "درايفر آبل في ويندوز", "unknown", "ما قدرنا نستعلم", "")
+    elif out2.strip() and "Apple" in out2:
+        add("driver", "درايفر آبل في ويندوز", "ok", out2.strip().splitlines()[-1].strip()[:80])
+    else:
+        add("driver", "درايفر آبل في ويندوز", "fail", "ويندوز ما يتعرف على أي جهاز آبل",
+            "نزّل تطبيق Apple Devices من Microsoft Store (يثبت الدرايفر) ثم أعد التوصيل")
+
+    # 6 lsusb
+    rc3, out3 = _cmd(["lsusb"])
+    apple_in_wsl = "apple" in out3.lower()
+    add("lsusb", "الجهاز داخل أوبنتو", "ok" if apple_in_wsl else "fail",
+        "آيفون ظاهر" if apple_in_wsl else "ما فيه جهاز آبل",
+        "" if apple_in_wsl else "شغّل justmgz.exe بصلاحيات مسؤول — يمرر الجهاز تلقائياً")
+
+    # 7 engine read
+    d = probe_device(force=True)
+    if d["connected"]:
+        f = d["fields"]
+        add("read", "قراءة الجهاز", "ok",
+            "%s · %s · iOS %s" % (f.get("Device Name", "?"), f.get("Product Type", "?"), f.get("iOS Version", "?")))
+    else:
+        add("read", "قراءة الجهاز", "fail", "المحرك ما قرأ جهاز",
+            "افتح شاشة الجهاز واضغط Trust، وبعدها أعد الفحص")
+
+    # 8 panel
+    add("panel", "لوحة التحكم", "ok", "تعمل على المنفذ %d" % PORT)
+
+    return {"ok": all(i["status"] in ("ok", "unknown") for i in items), "items": items}
+
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -526,6 +653,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/state"):
             return self._json(state())
+        if self.path.startswith("/api/diag"):
+            return self._json(diag())
         if self.path.startswith("/api/device"):
             return self._json(probe_device())
         if self.path.startswith("/health"):

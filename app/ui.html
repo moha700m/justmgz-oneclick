@@ -47,6 +47,22 @@ body{
 .hint{text-align:center;color:var(--mut);font-size:13px;margin:var(--s2) 0 var(--s5)}
 /* ---------- numbers ---------- */
 
+
+.dh{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.dh h2{margin:0;flex:1}
+.mini{font-size:12px;padding:7px 12px;border-radius:9px;border:1px solid var(--line);
+  background:#0b1219;color:var(--txt);font-family:inherit;font-weight:700;cursor:pointer}
+.mini:hover{border-color:#2a6b8a}
+.dl{display:flex;flex-direction:column;gap:9px}
+.di{display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border-radius:11px;background:#0b1219;border:1px solid #16212b}
+.di .ic{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:800;flex:none}
+.di.ok .ic{background:#0f3327;color:#4ade9c}
+.di.warn .ic{background:#332a12;color:#f5c66b}
+.di.fail .ic{background:#331717;color:#f08c8c}
+.di .l{font-size:13.5px;font-weight:700;line-height:1.4}
+.di .d{font-size:12px;color:var(--mut);line-height:1.5}
+.di .fx{font-size:12px;color:#f5c66b;line-height:1.5;margin-top:2px}
+
 .dev{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--line);
   border-radius:16px;padding:14px 16px;margin:0 0 14px;transition:border-color .2s}
 .dev.on{border-color:#1c5c45;background:#0d2119}
@@ -126,6 +142,14 @@ footer{margin-top:var(--s5);padding-top:var(--s3);border-top:1px solid var(--lin
       <span id="devSub">وصّل الآيفون بالكيبل — يكشفه لحاله</span>
     </div>
     <span class="mode" id="devMode">—</span>
+  </div>
+
+  <div class="card" id="diagCard">
+    <div class="dh">
+      <h2>فحص شامل</h2>
+      <button class="mini" id="diagBtn" type="button">أعد الفحص</button>
+    </div>
+    <div class="dl" id="diagList"><div class="di">جاري الفحص…</div></div>
   </div>
 
   <button class="start" id="start" disabled>
@@ -370,6 +394,34 @@ function devPoll(){
 }
 
 devPoll(); setInterval(devPoll, 3000);
+
+function diagRender(items){
+  var box=document.getElementById("diagList");
+  box.innerHTML="";
+  items.forEach(function(it){
+    var d=document.createElement("div");
+    d.className="di "+it.status;
+    var icon = it.status==="ok" ? "✓" : (it.status==="fail" ? "✕" : "!");
+    var h = '<div class="ic">'+icon+'</div><div><div class="l">'+it.label+'</div>';
+    if(it.detail) h += '<div class="d">'+it.detail+'</div>';
+    if(it.fix && it.status!=="ok") h += '<div class="fx">'+it.fix+'</div>';
+    h += '</div>';
+    d.innerHTML=h;
+    box.appendChild(d);
+  });
+}
+
+function runDiag(){
+  var box=document.getElementById("diagList");
+  box.innerHTML='<div class="di diisabled">جاري الفحص…</div>';
+  fetch("/api/diag",{cache:"no-store"}).then(function(r){return r.json()})
+    .then(function(d){ diagRender(d.items||[]); })
+    .catch(function(){ box.innerHTML='<div class="di fail"><div class="ic">✕</div><div><div class="l">ما قدرنا نفحص</div><div class="d">الجسر ما رد</div></div></div>'; });
+}
+
+document.getElementById("diagBtn").addEventListener("click", runDiag);
+runDiag();
+
 
 S.el.start.addEventListener("click", start);
 refreshState().catch(function(){ verdict("err","الجسر ما اشتغل","تأكد إن البرنامج شغال على 127.0.0.1."); });
