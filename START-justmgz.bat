@@ -1,4 +1,5 @@
 @echo off
+if defined JUSTMGZ_DEBUG @echo on
 chcp 65001 >nul
 setlocal EnableDelayedExpansion
 title justmgz - التثبيت والتشغيل
