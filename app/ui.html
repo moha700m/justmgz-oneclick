@@ -393,13 +393,14 @@ function devRender(d){
   }
   box.className="dev on";
   var pt=d.fields["Product Type"]||"";
-  var nice=NAMES[pt]||d.fields["Device Name"]||pt||"جهاز آبل";
+  var nice=NAMES[pt]||d.fields["Device Name"]||(d.chip?("جهاز "+d.chip):"")||pt||"جهاز آبل";
   nm.textContent=nice;
   var bits=[];
   if(pt) bits.push(pt);
   if(d.fields["iOS Version"]) bits.push("iOS "+d.fields["iOS Version"]);
   if(d.fields["Chip ID"]) bits.push(d.fields["Chip ID"]);
   if(d.mode) bits.push(d.mode);
+  if(d.via==="windows") bits.push("من ويندوز مباشرة");
   var v=chipVerdict(d.fields["CPID"]||"");
   if(v) bits.push(v);
   sub.textContent=bits.join(" · ")||"متصل";
