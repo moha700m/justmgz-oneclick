@@ -36,6 +36,8 @@ install-log.txt        نفس المجلد (خطوات التثبيت)
 • مكتبات imobiledevice / irecovery / usb / plist / curl / ssh2
 • محرك tr4mpass في /opt/justmgz/eng + ترقيع fix-build.patch
 • اللوحة على 127.0.0.1:8099
+• الصفحة مدمجة داخل الجسر — لو ناقص ملف ui.html تطلع من نفسها
+• فحص سريع: http://127.0.0.1:8099/health  ->  ok
 
 مهم: بعد التشغيل تطلع نافذة سوداء صغيرة باسم justmgz panel
 — هي اللي تشغّل اللوحة. لا تسكّرها. لو سكرتها تتوقف اللوحة.
