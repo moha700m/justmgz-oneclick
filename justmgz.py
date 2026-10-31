@@ -190,6 +190,12 @@ def selftest():
     log("  frozen  : %s" % hasattr(sys, "frozen"))
     log("  app dir : %s" % APP)
     log("  files   : %s" % ", ".join(sorted(p.name for p in APP.glob("*"))))
+    log("  webview : %s" % ("yes" if webview is not None else "NO"))
+    if webview is not None:
+        try:
+            log("  wv ver  : %s" % getattr(webview, "__version__", "?"))
+        except Exception:
+            pass
     ok = (APP / "justmgz-engine.py").is_file()
     log("  result  : %s" % ("OK" if ok else "MISSING ENGINE FILE"))
     return 0 if ok else 1
