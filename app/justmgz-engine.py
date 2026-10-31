@@ -243,10 +243,54 @@ def probe_device(force=False):
     else:
         low = out.lower()
         result["error"] = "no device" if ("no devices found" in low or "no device detected" in low) else "unknown"
+        win = detect_windows_pnp()
+        if win:
+            result.update({"connected": True, "mode": win["mode"], "via": "windows",
+                           "chip": win["chip"], "name": win["product"],
+                           "fields": {"Product Type": "", "Chip ID": win["chip"],
+                                      "CPID": win["cpid"], "ECID": win["ecid"],
+                                      "Serial": win["serial"], "Device Name": win["product"]},
+                           "note": "مقروء من ويندوز مباشرة — بدون تمرير USB"})
 
     DEV_CACHE.update(t=now, v=result)
     BUS.publish("device", connected=result["connected"], name=result.get("name", ""), mode=result.get("mode", ""))
     return result
+
+
+PS_QUERY = ("Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | "
+            "Where-Object { $_.InstanceId -like 'USB\\VID_05AC*' } | "
+            "Select-Object -First 6 InstanceId,FriendlyName,Status | ConvertTo-Json -Compress")
+PID_MODE = {"1227": "DFU", "1281": "Recovery", "12a8": "عادي", "12ab": "عادي"}
+GENERIC_NAME = re.compile(r"apple mobile device|usb driver|composite|generic", re.I)
+
+def detect_windows_pnp():
+    """يقرأ سيريال USB من ويندوز — سيريال DFU يحمل CPID/ECID بدون أي تمرير."""
+    rc, out = _cmd(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", PS_QUERY], timeout=20)
+    if rc != 0 or not out.strip():
+        return None
+    try:
+        data = json.loads(out)
+    except Exception:
+        return None
+    if isinstance(data, dict):
+        data = [data]
+    for item in data:
+        inst = str((item or {}).get("InstanceId") or "")
+        m = re.search(r"PID_([0-9A-Fa-f]{4})", inst)
+        if not m:
+            continue
+        pid = m.group(1).lower()
+        mode = PID_MODE.get(pid)
+        if not mode:
+            continue
+        serial = inst.split("\\")[-1]
+        info = parse_serial(serial)
+        friendly = str(item.get("FriendlyName") or "").strip()
+        product = friendly[:40] if friendly and not GENERIC_NAME.search(friendly) else ""
+        return {"present": True, "mode": mode, "pid": pid, "serial": serial,
+                "cpid": info.get("cpid", ""), "ecid": info.get("ecid", ""),
+                "chip": chip_name(info.get("cpid", "")), "product": product}
+    return None
 
 # ───────────── usbipd ─────────────
 def usbipd_path():
@@ -916,13 +960,14 @@ function devRender(d){
   }
   box.className="dev on";
   var pt=d.fields["Product Type"]||"";
-  var nice=NAMES[pt]||d.fields["Device Name"]||pt||"جهاز آبل";
+  var nice=NAMES[pt]||d.fields["Device Name"]||(d.chip?("جهاز "+d.chip):"")||pt||"جهاز آبل";
   nm.textContent=nice;
   var bits=[];
   if(pt) bits.push(pt);
   if(d.fields["iOS Version"]) bits.push("iOS "+d.fields["iOS Version"]);
   if(d.fields["Chip ID"]) bits.push(d.fields["Chip ID"]);
   if(d.mode) bits.push(d.mode);
+  if(d.via==="windows") bits.push("من ويندوز مباشرة");
   var v=chipVerdict(d.fields["CPID"]||"");
   if(v) bits.push(v);
   sub.textContent=bits.join(" · ")||"متصل";
