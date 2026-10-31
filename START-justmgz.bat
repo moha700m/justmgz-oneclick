@@ -120,7 +120,8 @@ echo    device attached (%BUSID%)
 :start_panel
 echo.
 echo Step 5/5 - starting the panel
-wsl -u root -e bash -lc "fuser -k 8099/tcp 2>/dev/null; sleep 1; setsid nohup env TR4MPASS_DIR=/opt/justmgz/eng python3 /opt/justmgz/app/justmgz-engine.py > /tmp/justmgz.log 2>&1 < /dev/null &" >nul 2>&1
+wsl -u root -e bash -lc "fuser -k 8099/tcp 2>/dev/null" >nul 2>&1
+start "justmgz panel - do not close" /min wsl -u root -e bash -lc "env TR4MPASS_DIR=/opt/justmgz/eng python3 /opt/justmgz/app/justmgz-engine.py > /tmp/justmgz.log 2>&1"
 if defined JUSTMGZ_SKIP_HEALTH goto open_browser
 
 set "HEALTH="
@@ -141,6 +142,8 @@ echo   The panel did not start inside Ubuntu. Last lines of the log:
 echo   --------------------------------------------
 wsl -u root -e tail -n 20 /tmp/justmgz.log
 echo   --------------------------------------------
+echo   Manual start (shows the error live):
+echo     start "" wsl -u root -e env TR4MPASS_DIR=/opt/justmgz/eng python3 /opt/justmgz/app/justmgz-engine.py
 echo   Full log:  wsl -u root cat /tmp/justmgz.log
 echo   Full check: double click DO-CHECK.bat
 echo.

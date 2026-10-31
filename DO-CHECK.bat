@@ -31,6 +31,9 @@ wsl -u root -e bash -lc "ldd /opt/justmgz/eng/tr4mpass 2>/dev/null | grep -c 'no
 echo [7] is port 8099 listening inside Ubuntu?
 wsl -u root -e bash -lc "fuser 8099/tcp 2>/dev/null || echo nothing"
 
+echo [7b] panel process running?
+wsl -u root -e bash -lc "pgrep -af justmgz-engine.py || echo none"
+
 echo [8] local HTTP response inside Ubuntu:
 wsl -u root -e bash -lc "curl -s -o /dev/null -w '%%{http_code}\n' http://127.0.0.1:8099/ 2>/dev/null || echo failed"
 
