@@ -11,6 +11,7 @@ class Stub
         if (exe == "wsl")
         {
             if (s.Contains("wslpath")) { Console.WriteLine("/mnt/c/actions/justmgz-oneclick"); return 0; }
+            if (s.Contains("cat /tmp/justmgz-apt.rc")) { Console.WriteLine("0"); return 0; }
             if (s.Trim() == "-u root -e true") return 0;
             Console.WriteLine("[stub] wsl " + s);
             return 0;

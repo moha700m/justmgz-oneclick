@@ -44,7 +44,9 @@ jobs:
           cmd /c "START-justmgz.bat < nul" 2>&1 | Tee-Object -FilePath bat-out.txt
           "---- assertions ----"
           $out = Get-Content bat-out.txt -Raw
-          foreach ($m in @("[1/5]","[2/5]","[3/5]","[4/5]","[5/5]")) {
+          $markers = @("الخطوة ١","الخطوة ٢","الخطوة ٣","الخطوة ٤","الخطوة ٥")
+          [Console]::OutputEncoding = [Text.Encoding]::UTF8
+          foreach ($m in $markers) {
             if ($out -notmatch [regex]::Escape($m)) { throw "missing stage marker $m" }
           }
           if ($out -notmatch "3-1") { throw "usbipd busid not detected" }
