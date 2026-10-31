@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows-bat:
+    name: Windows · batch control flow
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Encoding checks (UTF-8 no BOM + CRLF)
+        shell: pwsh
+        run: |
+          foreach ($f in @("START-justmgz.bat","RUN-justmgz.bat")) {
+            $b = [IO.File]::ReadAllBytes($f)
+            if ($b[0] -eq 0xEF -and $b[1] -eq 0xBB) { throw "$f has BOM" }
+            $t = [IO.File]::ReadAllText($f)
+            if ($t -notmatch "`r`n") { throw "$f is not CRLF" }
+            Write-Host "OK $f  ($($b.Length) bytes)"
+          }
+
+      - name: Python bridge compiles on Windows
+        run: python -m py_compile app/justmgz-engine.py
+
+      - name: Run START-justmgz.bat with stubs (no WSL needed)
+        shell: pwsh
+        run: |
+          $env:JUSTMGZ_NOELEV = "1"
+          $env:PATH = "$PWD\ci\stubs;$env:PATH"
+          cmd /c "START-justmgz.bat < nul" 2>&1 | Tee-Object -FilePath bat-out.txt
+          "---- assertions ----"
+          $out = Get-Content bat-out.txt -Raw
+          foreach ($m in @("[1/5]","[2/5]","[3/5]","[4/5]","[5/5]")) {
+            if ($out -notmatch [regex]::Escape($m)) { throw "missing stage marker $m" }
+          }
+          if ($out -notmatch "3-1") { throw "usbipd busid not detected" }
+          if (-not (Test-Path install-log.txt)) { throw "install-log.txt not created" }
+          Write-Host "batch flow OK"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-logs
+          path: |
+            bat-out.txt
+            install-log.txt
+          if-no-files-found: ignore
+
+  linux-engine:
+    name: Linux · real engine build + bridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential git pkg-config \
+            libimobiledevice-dev libirecovery-dev libusb-1.0-0-dev libplist-dev \
+            libcurl4-openssl-dev libssl-dev libssh2-1-dev libusbmuxd-dev psmisc curl
+
+      - name: Clone + patch + build engine
+        run: |
+          git clone --depth 1 https://github.com/tr4m0ryp/tr4mpass /tmp/eng
+          cd /tmp/eng
+          patch -p1 < "$GITHUB_WORKSPACE/app/fix-build.patch"
+          make -j"$(nproc)"
+          ./tr4mpass --help | head -4
+
+      - name: Start bridge and assert real output
+        run: |
+          setsid nohup env TR4MPASS_DIR=/tmp/eng python3 "$GITHUB_WORKSPACE/app/justmgz-engine.py" > /tmp/bridge.log 2>&1 < /dev/null &
+          sleep 4
+          curl -s --noproxy '*' http://127.0.0.1:8099/api/state | tee state.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("state.json"))
+          assert d["exists"], d
+          assert d["version"], d
+          assert d["engine_dir"] == "/tmp/eng", d
+          assert not d["missing_libs"], d
+          print("state OK:", d["version"], d["commit"][:7])
+          PY
+          curl -s -N --noproxy '*' -X POST "http://127.0.0.1:8099/api/run?mode=detect" > run.txt || true
+          head -5 run.txt
+          grep -q '"__meta__"' run.txt
+          echo "bridge returns real engine output + meta"
+
+      - name: Second instance should exit quietly
+        run: |
+          set +e
+          timeout 15 env TR4MPASS_DIR=/tmp/eng python3 "$GITHUB_WORKSPACE/app/justmgz-engine.py" > second.log 2>&1
+          code=$?
+          cat second.log
+          test "$code" -eq 0
+          grep -q "already running" second.log
+          echo "single-instance OK (exit $code)"

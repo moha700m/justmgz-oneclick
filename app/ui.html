@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>justmgz — تشغيل تلقائي</title>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0A0E13; --card:#101821; --card2:#0D141B; --line:#1E2A36;
+  --txt:#EAF1F7; --mut:#9DADBC; --acc:#38BDF8; --ok:#34D399; --warn:#F5B84D; --bad:#F87171;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+  --r:16px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:radial-gradient(900px 480px at 88% -12%,#132435 0%,transparent 62%),var(--bg);
+  color:var(--txt);font-family:'Tajawal',system-ui,-apple-system,sans-serif;
+  font-size:15px;line-height:1.65;-webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:720px;margin:0 auto;padding:var(--s5) var(--s4) var(--s6)}
+/* ---------- header ---------- */
+.brand{display:flex;align-items:center;gap:var(--s3);margin-bottom:var(--s5)}
+.mark{width:44px;height:44px;border-radius:13px;background:#122130;border:2px solid #1f4a63;
+  display:grid;place-items:center;color:var(--acc);font-weight:800;font-size:20px}
+.brand .txt{display:flex;flex-direction:column;gap:2px}
+.wordmark{font-size:19px;font-weight:800;letter-spacing:.5px;direction:ltr;unicode-bidi:isolate;line-height:1.1}
+.brand small{color:var(--mut);font-size:12.5px}
+.state{margin-inline-start:auto;display:flex;align-items:center;gap:var(--s2);font-size:13px;font-weight:700;
+  padding:9px 13px;border-radius:999px;border:1px solid var(--line);background:#0f1a22;white-space:nowrap}
+.state .dot{width:9px;height:9px;border-radius:50%;background:var(--mut);flex:none}
+.state.on .dot{background:var(--ok);box-shadow:0 0 0 4px rgba(52,211,153,.15)}
+.state.off .dot{background:var(--bad);box-shadow:0 0 0 4px rgba(248,113,113,.15)}
+/* ---------- big button ---------- */
+.start{
+  width:100%;min-height:64px;border:0;border-radius:18px;cursor:pointer;
+  background:linear-gradient(180deg,#42c8fb,#1f9fd8);color:#04212e;
+  font-family:inherit;font-size:19px;font-weight:800;letter-spacing:.2px;
+  display:flex;align-items:center;justify-content:center;gap:var(--s2);
+  box-shadow:0 18px 40px -22px #38bdf8;transition:transform .12s,filter .15s;
+}
+.start:hover:not(:disabled){filter:brightness(1.07)}
+.start:active:not(:disabled){transform:translateY(1px)}
+.start:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+.start .num{background:#04212e22;border-radius:8px;padding:1px 8px;font-size:15px}
+.hint{text-align:center;color:var(--mut);font-size:13px;margin:var(--s2) 0 var(--s5)}
+/* ---------- numbers ---------- */
+.nums{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--s2);margin-bottom:var(--s4)}
+.card{margin-top:0}
+.num-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:var(--s3);text-align:center}
+.num-card span{display:block;font-size:11.5px;color:#A9B8C7;font-weight:600;margin-bottom:2px}
+.num-card b{display:block;font-size:25px;font-weight:800;line-height:1.15;font-variant-numeric:tabular-nums}
+
+/* ---------- steps ---------- */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:var(--s4);margin-bottom:var(--s4)}
+.card h2{font-size:14px;margin:0 0 var(--s3);color:var(--mut);font-weight:700}
+.steps{list-style:none;margin:0;padding:0}
+.steps li{display:flex;align-items:center;gap:var(--s3);padding:13px 0;border-bottom:1px solid #16212b}
+.steps li:last-child{border:0;padding-bottom:0}
+.steps .ic{width:34px;height:34px;border-radius:11px;border:1.5px solid var(--line);background:#0b1219;
+  display:grid;place-items:center;flex:none;color:var(--mut);font-weight:800;font-size:14px}
+.steps .t{font-size:14.5px;font-weight:500}
+.steps .s{margin-inline-start:auto;font-size:12px;color:var(--mut);white-space:nowrap}
+.steps li.run .ic{border-color:var(--acc);color:var(--acc);animation:pulse 1.2s ease-in-out infinite}
+.steps li.run .s{color:var(--acc)}
+.steps li.ok .ic{border-color:var(--ok);color:var(--ok);background:#0d2119}
+.steps li.ok .s{color:var(--ok)}
+.steps li.err .ic{border-color:var(--bad);color:var(--bad);background:#221111}
+.steps li.err .s{color:var(--bad)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+/* ---------- verdict ---------- */
+.verdict{display:none;align-items:flex-start;gap:var(--s3);border-radius:14px;padding:var(--s4);margin-bottom:var(--s4);border:1.5px solid}
+.verdict.show{display:flex}
+.verdict.ok{background:#0d2119;border-color:#1c5c45}
+.verdict.err{background:#221111;border-color:#5c2323}
+.verdict.warn{background:#221c0e;border-color:#5c4a1c}
+.verdict .big{font-size:17px;font-weight:800;margin:0 0 3px}
+.verdict p{margin:0;font-size:13.5px;color:#d9e6f0}
+.verdict .ico{flex:none;margin-top:2px}
+/* ---------- log ---------- */
+details.log{background:var(--card2);border:1px solid var(--line);border-radius:14px;padding:0;overflow:hidden}
+details.log summary{cursor:pointer;padding:13px var(--s4);font-size:13.5px;font-weight:700;color:var(--mut);
+  list-style:none;display:flex;align-items:center;gap:var(--s2)}
+details.log summary::-webkit-details-marker{display:none}
+details.log summary .cnt{margin-inline-start:auto;font-size:11.5px;background:#0b1219;border:1px solid var(--line);
+  border-radius:999px;padding:2px 9px;font-variant-numeric:tabular-nums}
+pre{margin:0;padding:var(--s3) var(--s4) var(--s4);max-height:300px;overflow:auto;background:#070b10;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.6;
+  direction:ltr;text-align:left;white-space:pre-wrap;color:#c3d3e0;border-top:1px solid var(--line)}
+pre .e{color:#ff9b9b} pre .w{color:#f5c66b} pre .i{color:#82d5ff} pre .k{color:#8ef0c2}
+footer{margin-top:var(--s5);padding-top:var(--s3);border-top:1px solid var(--line);
+  color:var(--mut);font-size:12px;display:flex;justify-content:space-between;gap:var(--s2);flex-wrap:wrap}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+@media(max-width:420px){ .nums{grid-template-columns:repeat(2,1fr)} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="brand">
+    <div class="mark">j</div>
+    <div class="txt"><span class="wordmark" dir="ltr">justmgz</span><small>فاتح قفل iCloud — تشغيل تلقائي</small></div>
+    <div class="state" id="state"><span class="dot"></span><span id="stateTxt">جاري الفحص…</span></div>
+  </div>
+
+  <button class="start" id="start" disabled>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    ابدأ — وخله علينا
+  </button>
+  <p class="hint">وصّل الجهاز بالكيبل، واضغط الزر. البرنامج يكشفه ويختار الطريقة الصح بنفسه.</p>
+
+  <div class="nums">
+    <div class="num-card"><span>أجهزة موصولة</span><b id="nUsb">0</b></div>
+    <div class="num-card"><span>من ٤ خطوات</span><b id="nStep">0</b></div>
+    <div class="num-card"><span>أخطاء</span><b id="nErr">0</b></div>
+    <div class="num-card"><span>ثانية</span><b id="nSec">0</b></div>
+  </div>
+
+  <div class="card">
+    <h2>الخطوات</h2>
+    <ol class="steps" id="steps">
+      <li data-k="1"><div class="ic">١</div><div class="t">نشوف الجهاز موصول</div><div class="s">بانتظار</div></li>
+      <li data-k="2"><div class="ic">٢</div><div class="t">نكشف الموديل والوضع</div><div class="s">بانتظار</div></li>
+      <li data-k="3"><div class="ic">٣</div><div class="t">نختار الطريقة الصح</div><div class="s">بانتظار</div></li>
+      <li data-k="4"><div class="ic">٤</div><div class="t">نشغّل الفتح</div><div class="s">بانتظار</div></li>
+    </ol>
+  </div>
+
+  <div class="verdict" id="verdict">
+    <div class="ico" id="vIco"></div>
+    <div><p class="big" id="vT"></p><p id="vD"></p></div>
+  </div>
+
+  <details class="log" id="logBox">
+    <summary>سجل التشغيل الحقيقي <span class="cnt" id="nLines">0 سطر</span></summary>
+    <pre id="out">— ما فيه تشغيل بعد —</pre>
+  </details>
+
+  <footer>
+    <span>كل شي حقيقي — مخرج المحرك نفسه</span>
+    <span id="fEng">-</span>
+  </footer>
+</div>
+
+<script>
+var S = {
+  ok:false, busy:false, errs:0, lines:0, t0:0, timer:null,
+  el:{
+    state:document.getElementById("state"), stateTxt:document.getElementById("stateTxt"),
+    start:document.getElementById("start"), out:document.getElementById("out"),
+    nUsb:document.getElementById("nUsb"), nStep:document.getElementById("nStep"),
+    nErr:document.getElementById("nErr"), nSec:document.getElementById("nSec"),
+    nLines:document.getElementById("nLines"), steps:document.getElementById("steps"), logBox:document.getElementById("logBox"),
+    verdict:document.getElementById("verdict"), vT:document.getElementById("vT"),
+    vD:document.getElementById("vD"), vIco:document.getElementById("vIco"),
+    fEng:document.getElementById("fEng")
+  }
+};
+var ICON_OK = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#34D399" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+var ICON_ERR = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F87171" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+var ICON_WARN = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F5B84D" stroke-width="2.2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>';
+
+function step(k, cls, note){
+  var li = S.el.steps.querySelector('li[data-k="'+k+'"]');
+  if(!li) return;
+  li.className = cls || "";
+  if(note) li.querySelector(".s").textContent = note;
+  S.el.nStep.textContent = Math.max(parseInt(S.el.nStep.textContent)||0, cls==="ok"?k:k-1);
+}
+function resetSteps(){
+  [].forEach.call(S.el.steps.children, function(li){ li.className=""; li.querySelector(".s").textContent="بانتظار"; });
+  S.el.nStep.textContent = "0";
+}
+function verdict(kind, title, desc){
+  S.el.verdict.className = "verdict show " + kind;
+  S.el.vT.textContent = title;
+  S.el.vD.textContent = desc;
+  S.el.vIco.innerHTML = kind==="ok"?ICON_OK:(kind==="warn"?ICON_WARN:ICON_ERR);
+}
+function clearVerdict(){ S.el.verdict.className = "verdict"; }
+
+function paint(line){
+  S.lines++;
+  S.el.nLines.textContent = S.lines + " سطر";
+  var cls = "";
+  if(line.indexOf("[ERROR]")>-1) cls="e";
+  else if(line.indexOf("[WARN")>-1) cls="w";
+  else if(line.indexOf("[INFO]")>-1) cls="i";
+  else if(line.indexOf("[OK]")>-1) cls="k";
+  var sp=document.createElement("span");
+  if(cls) sp.className=cls;
+  sp.textContent=line+"\n";
+  S.el.out.appendChild(sp);
+  S.el.out.scrollTop=S.el.out.scrollHeight;
+}
+
+function startTimer(){
+  S.t0=Date.now(); clearInterval(S.timer);
+  S.timer=setInterval(function(){ S.el.nSec.textContent = ((Date.now()-S.t0)/1000).toFixed(1); },100);
+}
+function stopTimer(){ clearInterval(S.timer); if(S.t0) S.el.nSec.textContent = ((Date.now()-S.t0)/1000).toFixed(1); }
+
+function setBusy(v){
+  S.busy=v; S.el.start.disabled = v || !S.ok;
+  S.el.start.style.opacity = v? .7 : 1;
+}
+
+function runMode(mode){
+  return fetch("/api/run?mode="+mode,{method:"POST"}).then(function(res){
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    var rd=res.body.getReader(), dec=new TextDecoder(), buf="", meta=null;
+    function pump(){
+      return rd.read().then(function(c){
+        if(c.done) return meta;
+        buf += dec.decode(c.value,{stream:true});
+        var parts = buf.split("\n"); buf = parts.pop();
+        parts.forEach(function(l){
+          if(l.indexOf('"__meta__"')>-1){ try{ meta=JSON.parse(l).__meta__; }catch(e){} return; }
+          if(l) paint(l);
+        });
+        return pump();
+      });
+    }
+    return pump();
+  });
+}
+
+function refreshState(){
+  return fetch("/api/state").then(function(r){return r.json()}).then(function(s){
+    S.ok = !!s.exists;
+    S.el.fEng.textContent = s.engine_dir || "-";
+    S.el.nUsb.textContent = s.usb_apple || 0;
+    S.el.state.className = "state " + (S.ok?"on":"off");
+    S.el.stateTxt.textContent = S.ok ? ("جاهز · v"+s.version) : "المحرك مو موجود";
+    if(!S.ok){
+      verdict("err","ما لقينا المحرك","مسار المحرك غلط أو ما تم بناؤه: "+s.binary);
+    }
+    S.el.start.disabled = !S.ok || S.busy;
+    return s;
+  });
+}
+
+function start(){
+  if(S.busy || !S.ok) return;
+  setBusy(true); clearVerdict(); resetSteps();
+  S.errs=0; S.lines=0; S.el.nErr.textContent="0"; S.el.nLines.textContent="0 سطر";
+  S.el.out.textContent=""; startTimer();
+
+  step(1,"run","نفحص…");
+  refreshState().then(function(s){
+    if((s.usb_apple||0) > 0){ step(1,"ok","موصول"); }
+    else { step(1,"err","ما فيه جهاز"); throw {step:1}; }
+
+    step(2,"run","نكشف…");
+    return runMode("detect").then(function(meta){
+      if(!meta || meta.verdict!=="ok"){ throw {step:2, meta:meta}; }
+      step(2,"ok","تم الكشف"); return meta;
+    });
+  }).then(function(){
+    step(3,"run","نختار…");
+    // المحرك يقرر المسار بنفسه حسب الشريحة؛ نجرب فحص جاف أول عشان نطبع بيئة التشغيل
+    return runMode("dry").then(function(meta){
+      step(3,"ok","تلقائي"); return meta;
+    });
+  }).then(function(){
+    step(4,"run","يشتغل…");
+    return runMode("pathA").then(function(meta){
+      if(meta && meta.verdict==="ok"){ return meta; }
+      // لو مسار A ما نفع، نجرب B تلقائياً (A12+)
+      paint("[auto] مسار A ما نفع — ننتقل لمسار B");
+      return runMode("pathB");
+    });
+  }).then(function(meta){
+    stopTimer();
+    if(meta && meta.verdict==="ok"){
+      step(4,"ok","خلص");
+      verdict("ok","تم الفتح","الجهاز فكّ القفل. شيّك بنفسك قبل ما تسلّمه.");
+      S.el.nStep.textContent="4";
+    } else {
+      throw {step:4, meta:meta};
+    }
+  }).catch(function(e){
+    stopTimer(); setBusy(false);
+    var meta = e && e.meta;
+    S.errs = meta ? meta.errors : (S.errs||1);
+    S.el.nErr.textContent = S.errs;
+    if(e && e.step) step(e.step,"err");
+    if(!S.ok) return;
+    var msg = {
+      1: ["الجهاز مو موصول","شبك الكيبل الأصلي في الجهاز والكمبيوتر، وخل شاشة الجهاز تولّع. بعدها اضغط «ابدأ»."],
+      2: ["شبكناه بس ما انكشف","جرّب تحطه على وضع DFU: اضغط زر الطاقة وزر خفض الصوت مع بعض ١٠ ثواني، بعدين كمل التعليمات."],
+      3: ["ما قدرنا نختار الطريقة","المحرك ما رجّع معلومات الشريحة. أعد التوصيل واضغط «ابدأ» من جديد."],
+      4: ["الفتح ما كمّل","الجهاز انكشف لكن العملية توقفت. افتح السجل تحت وشوف آخر سطر — وأرسله لي لو احتجت."]
+    }[e && e.step] || ["ما ضبط","جرّب مرة ثانية، وإذا تكرر افتح السجل تحت."];
+    verdict("err", msg[0], msg[1]);
+    S.el.logBox.open = true;
+  }).then(function(){ setBusy(false); });
+}
+
+S.el.start.addEventListener("click", start);
+refreshState().catch(function(){ verdict("err","الجسر ما اشتغل","تأكد إن البرنامج شغال على 127.0.0.1."); });
+</script>
+</body>
+</html>

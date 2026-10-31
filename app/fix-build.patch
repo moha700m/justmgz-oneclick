@@ -1,0 +1,45 @@
+diff --git a/Makefile b/Makefile
+index 9e28294..27d54d1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -26,9 +26,9 @@ PROBE_CFLAGS := $(shell pkg-config --cflags libplist-2.0 libirecovery-1.0 2>/dev
+ 
+ # `#` is a make comment even inside $(shell ...), so emit the `#include`
+ # via printf's octal escape (\043).
+-HAVE_PLIST_MEM_FREE  := $(shell printf '\043include <plist/plist.h>\nint main(void){plist_mem_free((void*)0);return 0;}\n' | $(CC) $(PROBE_CFLAGS) -x c -c - -o /dev/null 2>/dev/null && echo 1 || echo 0)
+-HAVE_PLIST_FROM_MEM4 := $(shell printf '\043include <plist/plist.h>\nint main(void){plist_t p=0; plist_from_memory("",0,&p,(plist_format_t*)0);return 0;}\n' | $(CC) $(PROBE_CFLAGS) -x c -c - -o /dev/null 2>/dev/null && echo 1 || echo 0)
+-HAVE_IRECV_NOTIFY    := $(shell printf '\043include <libirecovery.h>\nint main(void){return (int)IRECV_SEND_OPT_DFU_NOTIFY_FINISH;}\n' | $(CC) $(PROBE_CFLAGS) -x c -c - -o /dev/null 2>/dev/null && echo 1 || echo 0)
++HAVE_PLIST_MEM_FREE  := $(shell printf '\043include <plist/plist.h>\nint main(void){plist_mem_free((void*)0);return 0;}\n' | $(CC) $(PROBE_CFLAGS) -Werror=implicit-function-declaration -x c -c - -o /dev/null 2>/dev/null && echo 1 || echo 0)
++HAVE_PLIST_FROM_MEM4 := $(shell printf '\043include <plist/plist.h>\nint main(void){plist_t p=0; plist_from_memory("",0,&p,(plist_format_t*)0);return 0;}\n' | $(CC) $(PROBE_CFLAGS) -Werror=implicit-function-declaration -x c -c - -o /dev/null 2>/dev/null && echo 1 || echo 0)
++HAVE_IRECV_NOTIFY    := $(shell printf '\043include <libirecovery.h>\nint main(void){return (int)IRECV_SEND_OPT_DFU_NOTIFY_FINISH;}\n' | $(CC) $(PROBE_CFLAGS) -Werror=implicit-function-declaration -x c -c - -o /dev/null 2>/dev/null && echo 1 || echo 0)
+ 
+ ifeq ($(HAVE_PLIST_MEM_FREE),1)
+     CFLAGS += -DTP_PLIST_HAS_MEM_FREE=1
+diff --git a/include/compat/plist_compat.h b/include/compat/plist_compat.h
+index 2ba7812..be9a93c 100644
+--- a/include/compat/plist_compat.h
++++ b/include/compat/plist_compat.h
+@@ -40,7 +40,10 @@ static inline void tp_plist_mem_free(void *p)
+                                            plist_t *out,
+                                            plist_format_t *fmt_out)
+     {
+-        return (int)plist_from_memory(data, length, out, fmt_out);
++        /* libplist returns void here (2.3.x) -- derive status from *out. */
++        *out = NULL;
++        plist_from_memory(data, length, out, fmt_out);
++        return (*out != NULL) ? 0 : -1;
+     }
+ #else
+     /* Pre-2.3: 3-arg form; format_out is ignored because the older
+@@ -52,7 +55,10 @@ static inline void tp_plist_mem_free(void *p)
+                                            void *fmt_out)
+     {
+         (void)fmt_out;
+-        return (int)plist_from_memory(data, length, out);
++        /* libplist <=2.2 returns void here -- derive status from *out. */
++        *out = NULL;
++        plist_from_memory(data, length, out);
++        return (*out != NULL) ? 0 : -1;
+     }
+ #endif
+ 
