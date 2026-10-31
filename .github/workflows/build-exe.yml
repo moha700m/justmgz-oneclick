@@ -1,0 +1,62 @@
+name: Build EXE
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "justmgz.py"
+      - "app/**"
+      - ".github/workflows/build-exe.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Windows exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: pip install --quiet pyinstaller
+
+      - name: Build one-file exe
+        run: pyinstaller --onefile --noconfirm --clean --name justmgz --add-data "app;app" justmgz.py
+
+      - name: Smoke test (selftest)
+        run: dist\justmgz.exe --selftest
+
+      - name: Show size
+        run: dir dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: justmgz-exe
+          path: dist/justmgz.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: justmgz-exe
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ github.run_number }}"
+          gh release create "$TAG" dist/justmgz.exe \
+            --repo "${{ github.repository }}" \
+            --title "justmgz $TAG" \
+            --notes "One-file Windows app. Run justmgz.exe, press Yes on the admin prompt, wait, then the panel opens in your browser." \
+            --latest
