@@ -19,39 +19,24 @@ jobs:
             if ($b[0] -eq 0xEF -and $b[1] -eq 0xBB) { throw "$f has BOM" }
             $t = [IO.File]::ReadAllText($f)
             if ($t -notmatch "`r`n") { throw "$f is not CRLF" }
-            Write-Host "OK $f  ($($b.Length) bytes)"
+            Write-Host "OK $f ($($b.Length) bytes)"
           }
 
       - name: Python bridge compiles on Windows
         run: python -m py_compile app/justmgz-engine.py
 
-      - name: Build stub executables (wsl/usbipd/winget)
+      - name: Compile stub executables
         shell: pwsh
         run: |
-          foreach ($n in @("wsl","usbipd","winget")) {
-            $cls = "Stub_" + $n
-            $code = @"
-          using System;
-          class $cls {
-            static int Main(string[] a) {
-              string s = string.Join(" ", a);
-              if (s.StartsWith("-u root wslpath")) { Console.WriteLine("/mnt/c/actions/justmgz-oneclick"); return 0; }
-              if (s == "-u root -e true") return 0;
-              if (a.Length > 0 && a[0] == "list") {
-                Console.WriteLine("BUSID  VID:PID    DEVICE                        STATE");
-                Console.WriteLine("3-1    05ac:12a8  Apple Inc. iPhone             Not shared");
-                return 0;
-              }
-              Console.WriteLine("[stub] " + s);
-              return 0;
-            }
-          }
-"@
-            Add-Type -TypeDefinition $code -OutputAssembly "$PWD\ci\bin\$n.exe" -OutputType ConsoleApplication
-          }
-          dir ci\bin
+          New-Item -ItemType Directory -Force ci\bin | Out-Null
+          $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { $csc = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe" }
+          & $csc /nologo /out:ci\bin\wsl.exe ci\stub.cs
+          Copy-Item ci\bin\wsl.exe ci\bin\usbipd.exe -Force
+          Copy-Item ci\bin\wsl.exe ci\bin\winget.exe -Force
+          Get-ChildItem ci\bin | Select-Object Name,Length
 
-      - name: Run START-justmgz.bat with stubs (no WSL needed)
+      - name: Run START-justmgz.bat with stubs
         shell: pwsh
         run: |
           $env:JUSTMGZ_NOELEV = "1"
@@ -66,6 +51,16 @@ jobs:
           if (-not (Test-Path install-log.txt)) { throw "install-log.txt not created" }
           Write-Host "batch flow OK"
 
+      - name: Run RUN-justmgz.bat with stubs
+        shell: pwsh
+        run: |
+          $env:JUSTMGZ_NOELEV = "1"
+          $env:PATH = "$PWD\ci\bin;$env:PATH"
+          cmd /c "RUN-justmgz.bat < nul" 2>&1 | Tee-Object -FilePath run-out.txt
+          $out = Get-Content run-out.txt -Raw
+          if ($out -notmatch "OK") { throw "attach confirmation missing" }
+          Write-Host "rerun flow OK"
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -73,6 +68,7 @@ jobs:
           name: windows-logs
           path: |
             bat-out.txt
+            run-out.txt
             install-log.txt
           if-no-files-found: ignore
 
@@ -116,7 +112,7 @@ jobs:
           grep -q '"__meta__"' run.txt
           echo "bridge returns real engine output + meta"
 
-      - name: Second instance should exit quietly
+      - name: Second instance exits quietly
         run: |
           set +e
           timeout 15 env TR4MPASS_DIR=/tmp/eng python3 "$GITHUB_WORKSPACE/app/justmgz-engine.py" > second.log 2>&1
