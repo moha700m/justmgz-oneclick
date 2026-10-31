@@ -46,6 +46,21 @@ body{
 .start .num{background:#04212e22;border-radius:8px;padding:1px 8px;font-size:15px}
 .hint{text-align:center;color:var(--mut);font-size:13px;margin:var(--s2) 0 var(--s5)}
 /* ---------- numbers ---------- */
+
+.dev{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--line);
+  border-radius:16px;padding:14px 16px;margin:0 0 14px;transition:border-color .2s}
+.dev.on{border-color:#1c5c45;background:#0d2119}
+.dev.off{border-color:#3a2222;background:#1a1010}
+.dev .st{width:10px;height:10px;border-radius:50%;background:#8b97a5;flex:none}
+.dev.on .st{background:var(--ok);box-shadow:0 0 0 4px rgba(52,211,153,.15)}
+.dev.off .st{background:var(--bad);box-shadow:0 0 0 4px rgba(248,113,113,.15)}
+.dev .t{flex:1;min-width:0}
+.dev b{display:block;font-size:16px;font-weight:800;line-height:1.3}
+.dev span{display:block;font-size:12.5px;color:var(--mut);line-height:1.5}
+.dev .mode{font-size:11.5px;font-weight:800;padding:5px 10px;border-radius:999px;border:1px solid var(--line);
+  color:var(--mut);white-space:nowrap}
+.dev.on .mode{border-color:#1c5c45;color:#a9f0d2}
+
 .nums{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--s2);margin-bottom:var(--s4)}
 .card{margin-top:0}
 .num-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:var(--s3);text-align:center}
@@ -102,6 +117,15 @@ footer{margin-top:var(--s5);padding-top:var(--s3);border-top:1px solid var(--lin
     <div class="mark">j</div>
     <div class="txt"><span class="wordmark" dir="ltr">justmgz</span><small>فاتح قفل iCloud — تشغيل تلقائي</small></div>
     <div class="state" id="state"><span class="dot"></span><span id="stateTxt">جاري الفحص…</span></div>
+  </div>
+
+  <div class="dev off" id="dev">
+    <span class="st"></span>
+    <div class="t">
+      <b id="devName">ما فيه جهاز موصول</b>
+      <span id="devSub">وصّل الآيفون بالكيبل — يكشفه لحاله</span>
+    </div>
+    <span class="mode" id="devMode">—</span>
   </div>
 
   <button class="start" id="start" disabled>
@@ -297,6 +321,55 @@ function start(){
     S.el.logBox.open = true;
   }).then(function(){ setBusy(false); });
 }
+
+
+var DEV = {timer:null, last:null};
+var NAMES = {"iPhone8,1": "iPhone 6s", "iPhone8,2": "iPhone 6s Plus", "iPhone8,4": "iPhone SE 1", "iPhone9,1": "iPhone 7", "iPhone9,3": "iPhone 7", "iPhone9,2": "iPhone 7 Plus", "iPhone9,4": "iPhone 7 Plus", "iPhone10,1": "iPhone 8", "iPhone10,4": "iPhone 8", "iPhone10,2": "iPhone 8 Plus", "iPhone10,5": "iPhone 8 Plus", "iPhone10,3": "iPhone X", "iPhone10,6": "iPhone X", "iPhone11,2": "iPhone XS", "iPhone11,4": "iPhone XS Max", "iPhone11,6": "iPhone XS Max", "iPhone11,8": "iPhone XR", "iPhone12,1": "iPhone 11", "iPhone12,3": "iPhone 11 Pro", "iPhone12,5": "iPhone 11 Pro Max", "iPhone12,8": "iPhone SE 2", "iPhone13,1": "iPhone 12 mini", "iPhone13,2": "iPhone 12", "iPhone13,3": "iPhone 12 Pro", "iPhone13,4": "iPhone 12 Pro Max", "iPhone14,4": "iPhone 13 mini", "iPhone14,5": "iPhone 13", "iPhone14,2": "iPhone 13 Pro", "iPhone14,3": "iPhone 13 Pro Max", "iPhone14,6": "iPhone SE 3", "iPhone14,7": "iPhone 14", "iPhone14,8": "iPhone 14 Plus", "iPhone15,2": "iPhone 14 Pro", "iPhone15,3": "iPhone 14 Pro Max", "iPhone15,4": "iPhone 15", "iPhone15,5": "iPhone 15 Plus", "iPhone16,1": "iPhone 15 Pro", "iPhone16,2": "iPhone 15 Pro Max", "iPhone17,3": "iPhone 16", "iPhone17,4": "iPhone 16 Plus", "iPhone17,1": "iPhone 16 Pro", "iPhone17,2": "iPhone 16 Pro Max", "iPhone17,5": "iPhone 16e", "iPad4,1": "iPad Air", "iPad4,2": "iPad Air", "iPad4,3": "iPad Air", "iPad4,4": "iPad mini 2", "iPad4,5": "iPad mini 2", "iPad4,7": "iPad mini 3", "iPad4,8": "iPad mini 3", "iPad5,3": "iPad Air 2", "iPad5,4": "iPad Air 2", "iPad5,1": "iPad mini 4", "iPad5,2": "iPad mini 4", "iPad6,3": "iPad Pro 9.7", "iPad6,4": "iPad Pro 9.7", "iPad6,7": "iPad Pro 12.9", "iPad6,8": "iPad Pro 12.9", "iPad6,11": "iPad 5", "iPad6,12": "iPad 5", "iPad7,1": "iPad Pro 12.9 (2)", "iPad7,2": "iPad Pro 12.9 (2)", "iPad7,3": "iPad Pro 10.5", "iPad7,4": "iPad Pro 10.5", "iPad7,5": "iPad 6", "iPad7,6": "iPad 6", "iPad7,11": "iPad 7", "iPad7,12": "iPad 7", "iPad11,1": "iPad mini 5", "iPad11,2": "iPad mini 5", "iPad11,3": "iPad Air 3", "iPad11,4": "iPad Air 3", "iPad12,1": "iPad 9", "iPad12,2": "iPad 9", "iPad13,1": "iPad Air 4", "iPad13,2": "iPad Air 4", "iPad13,18": "iPad 10", "iPad13,19": "iPad 10", "iPad14,1": "iPad mini 6", "iPad14,2": "iPad mini 6", "iPad14,8": "iPad Air 5 (M1)", "iPad14,9": "iPad Air 5 (M1)"};
+function chipVerdict(cpid){
+  if(!cpid) return "";
+  var c=parseInt(cpid,16);
+  if(isNaN(c)) return "";
+  if(c<=0x8015){
+    if(c===0x8960||c===0x7000||c===0x7001) return "مسار A · تفتح بدون شبكة";
+    return "مسار A · تفتح والشبكة تعمل";
+  }
+  if(c>=0x8020) return "مسار B · تحتاج إنترنت";
+  return "";
+}
+
+
+function devRender(d){
+  var box=document.getElementById("dev"), nm=document.getElementById("devName"),
+      sub=document.getElementById("devSub"), md=document.getElementById("devMode");
+  if(!d || !d.connected){
+    box.className="dev off";
+    nm.textContent="ما فيه جهاز موصول";
+    sub.textContent="وصّل الآيفون بالكيبل، واضغط Trust على شاشته";
+    md.textContent="—";
+    return;
+  }
+  box.className="dev on";
+  var pt=d.fields["Product Type"]||"";
+  var nice=NAMES[pt]||d.fields["Device Name"]||pt||"جهاز آبل";
+  nm.textContent=nice;
+  var bits=[];
+  if(pt) bits.push(pt);
+  if(d.fields["iOS Version"]) bits.push("iOS "+d.fields["iOS Version"]);
+  if(d.fields["Chip ID"]) bits.push(d.fields["Chip ID"]);
+  if(d.mode) bits.push(d.mode);
+  var v=chipVerdict(d.fields["CPID"]||"");
+  if(v) bits.push(v);
+  sub.textContent=bits.join(" · ")||"متصل";
+  md.textContent=d.mode||"متصل";
+}
+
+function devPoll(){
+  fetch("/api/device",{cache:"no-store"}).then(function(r){return r.json()})
+    .then(function(d){ DEV.last=d; devRender(d); })
+    .catch(function(){ devRender(null); });
+}
+
+devPoll(); setInterval(devPoll, 3000);
 
 S.el.start.addEventListener("click", start);
 refreshState().catch(function(){ verdict("err","الجسر ما اشتغل","تأكد إن البرنامج شغال على 127.0.0.1."); });
