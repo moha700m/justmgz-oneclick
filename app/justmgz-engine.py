@@ -1,83 +1,525 @@
 #!/usr/bin/env python3
-"""
-justmgz engine bridge
----------------------
-واجهة محلية تشغّل محرّك tr4mpass الحقيقي وتنقل مخرجاته كما هي.
-لا يوجد محاكي، ولا نجاح مزيّف: كل سطر يظهر هنا خرج فعلي من المحرّك.
-"""
-import http.server, socketserver, subprocess, os, sys, json, time, re, shutil, threading, webbrowser
+"""justmgz bridge v3 — event bus + SSE + simulator + 5 detection backends."""
+import http.server, socketserver, subprocess, os, sys, json, time, re, shutil, threading, queue
+from collections import deque
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
 def _resolve_engine():
-    cands = [os.environ.get("TR4MPASS_DIR", ""),
-             os.path.join(BASE, "tr4mpass"),
-             os.path.join(os.path.dirname(BASE), "tr4mpass"),
-             os.path.expanduser("~/tr4mpass"),
-             "/tmp/tr4mpass"]
-    for c in cands:
+    for c in [os.environ.get("TR4MPASS_DIR", ""), os.path.join(BASE, "tr4mpass"),
+              os.path.join(os.path.dirname(BASE), "tr4mpass"), os.path.expanduser("~/tr4mpass"),
+              "/opt/justmgz/eng", "/tmp/tr4mpass"]:
         if c and os.access(os.path.join(c, "tr4mpass"), os.X_OK):
             return c
-    return cands[1] if not os.environ.get("TR4MPASS_DIR") else os.environ["TR4MPASS_DIR"]
+    return os.environ.get("TR4MPASS_DIR") or "/opt/justmgz/eng"
 
 ENGINE_DIR = _resolve_engine()
 BIN = os.path.join(ENGINE_DIR, "tr4mpass")
 PORT = int(os.environ.get("JUSTMGZ_PORT", "8099"))
 
-MODES = {
-    "detect":   ["-d"],
-    "dry":      ["-n", "-v"],
-    "pathA":    ["-a", "-v"],
-    "pathB":    ["-b", "-v"],
-    "activate": ["--activate-only", "-v"],
-    "probe":    ["--probe-albert", "-v"],
+MODES = {"detect": ["-d"], "dry": ["-n", "-v"], "pathA": ["-a", "-v"],
+         "pathB": ["-b", "-v"], "activate": ["--activate-only", "-v"], "probe": ["--probe-albert", "-v"]}
+
+# ───────────── event bus ─────────────
+class Bus:
+    def __init__(self, backlog=400, qmax=800):
+        self.lock = threading.Lock()
+        self.subs = []
+        self.backlog = deque(maxlen=backlog)
+        self.seq = 0
+
+    def publish(self, kind, **data):
+        with self.lock:
+            self.seq += 1
+            ev = {"id": self.seq, "t": round(time.time(), 3), "kind": kind}
+            ev.update(data)
+            self.backlog.append(ev)
+            subs = list(self.subs)
+        for q in subs:
+            try:
+                q.put_nowait(ev)
+            except queue.Full:
+                pass
+        return ev
+
+    def subscribe(self, replay=0):
+        q = queue.Queue(maxsize=800)
+        with self.lock:
+            self.subs.append(q)
+            items = list(self.backlog)[-replay:] if replay else []
+        for ev in items:
+            q.put_nowait(ev)
+        return q
+
+    def unsubscribe(self, q):
+        with self.lock:
+            if q in self.subs:
+                self.subs.remove(q)
+
+BUS = Bus()
+
+# ───────────── chip + model maps ─────────────
+CPID_CHIP = {"8960": "A7", "7000": "A8", "7001": "A8", "8000": "A9", "8003": "A9X",
+             "8010": "A10", "8011": "A10X", "8015": "A11", "8020": "A12", "8027": "A12X/A12Z",
+             "8030": "A13", "8101": "A14", "8110": "A15", "8120": "A16", "8130": "A17",
+             "8140": "A18", "8028": "A12X", "8103": "A14"}
+A_CHIPS = {"A7", "A8", "A9", "A9X", "A10", "A10X", "A11"}
+
+NAMES = json.loads(open(os.path.join(BASE, "names.json"), encoding="utf-8").read()) if os.path.exists(os.path.join(BASE, "names.json")) else {}
+
+def chip_name(cpid):
+    if not cpid:
+        return ""
+    key = cpid.lower().replace("0x", "").zfill(4)
+    return CPID_CHIP.get(key, "")
+
+def parse_serial(text):
+    out = {}
+    for key, pat in (("cpid", r"CPID:\s*(0x)?([0-9A-Fa-f]+)"),
+                     ("ecid", r"ECID:\s*(0x)?([0-9A-Fa-f]+)"),
+                     ("serial", r"Serial:\s*(\S+)"),
+                     ("product", r"Product Type:\s*(\S+)"),
+                     ("ios", r"iOS Version:\s*(\S+)"),
+                     ("name", r"Device Name:\s*(.+)")):
+        m = re.search(pat, text)
+        if m:
+            out[key] = m.group(m.lastindex) if key in ("cpid", "ecid") else m.group(1).strip()
+    return out
+
+# ───────────── detection backends ─────────────
+def _cmd(args, timeout=20):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
+    except FileNotFoundError:
+        return 127, "not found"
+    except Exception as e:
+        return 1, str(e)
+
+def backend_pyusb():
+    try:
+        import usb.core
+    except Exception:
+        return {"backend": "pyusb", "ok": False, "note": "غير مثبت"}
+    try:
+        devs = list(usb.core.find(find_all=True, idVendor=0x05AC) or [])
+        return {"backend": "pyusb", "ok": bool(devs), "count": len(devs)}
+    except Exception as e:
+        return {"backend": "pyusb", "ok": False, "note": str(e)[:60]}
+
+def backend_pnp():
+    ps = ("Get-PnpDevice -PresentOnly | Where-Object { $_.FriendlyName -match 'Apple' } "
+          "| Select-Object -First 4 Status,FriendlyName | Out-String")
+    rc, out = _cmd(["powershell.exe", "-NoProfile", "-Command", ps], timeout=25)
+    if rc == 127:
+        return {"backend": "pnp", "ok": False, "note": "powershell غير متاح"}
+    return {"backend": "pnp", "ok": "apple" in out.lower(), "note": out.strip()[:120]}
+
+def backend_usbipd():
+    rc, out = _cmd(["usbipd.exe", "list"], timeout=20)
+    if rc == 127:
+        return {"backend": "usbipd", "ok": False, "note": "غير مثبت"}
+    apple = [l.split()[0] for l in out.splitlines() if "apple" in l.lower() and l.split()]
+    return {"backend": "usbipd", "ok": bool(apple), "busids": apple, "note": ""}
+
+def backend_pmd3():
+    rc, out = _cmd(["python3", "-c", "import pymobiledevice3,sys;print('ok')"], timeout=15)
+    if rc != 0:
+        return {"backend": "pymobiledevice3", "ok": False, "note": "غير مثبت"}
+    rc2, out2 = _cmd(["pymobiledevice3", "usbmux", "list"], timeout=20)
+    return {"backend": "pymobiledevice3", "ok": rc2 == 0 and "udid" in out2.lower(), "note": out2.strip()[:120]}
+
+def backend_libimobiledevice():
+    rc, out = _cmd(["idevice_id", "-l"], timeout=15)
+    if rc == 127:
+        return {"backend": "libimobiledevice", "ok": False, "note": "الأداة غير مثبتة"}
+    ids = [l for l in out.splitlines() if l.strip()]
+    return {"backend": "libimobiledevice", "ok": bool(ids), "count": len(ids)}
+
+def detect_backends():
+    fns = [backend_pyusb, backend_pnp, backend_usbipd, backend_pmd3, backend_libimobiledevice]
+    res = []
+    for fn in fns:
+        try:
+            res.append(fn())
+        except Exception as e:
+            res.append({"backend": fn.__name__, "ok": False, "note": str(e)[:60]})
+    return res
+
+# ───────────── simulator ─────────────
+SIM_STATES = {
+    "no_device": None,
+    "dfu_a9": {"mode": "DFU", "fields": {"Product Type": "iPhone9,1", "Chip ID": "A10 Fusion",
+               "iOS Version": "15.8", "CPID": "0x8010", "ECID": "0x1A2B3C4D5E", "Serial": "F2LXSIM01",
+               "Device Name": "تجربة — DFU A9"}},
+    "dfu_a12": {"mode": "DFU", "fields": {"Product Type": "iPhone11,8", "Chip ID": "A12 Bionic",
+                "iOS Version": "17.5", "CPID": "0x8020", "ECID": "0x9F8E7D6C5B", "Serial": "G0SIM00042",
+                "Device Name": "تجربة — DFU A12"}},
+    "recovery_a14": {"mode": "Recovery", "fields": {"Product Type": "iPhone13,2", "Chip ID": "A14 Bionic",
+                     "iOS Version": "18.3", "CPID": "0x8101", "ECID": "0x1122334455", "Serial": "H7SIM00099",
+                     "Device Name": "تجربة — Recovery A14"}},
 }
 
+def sim_state():
+    s = os.environ.get("TR4MPASS_SIM", "")
+    if s in ("", "0", "off"):
+        return None
+    return s if s in SIM_STATES else "no_device"
+
+def sim_enabled():
+    return os.environ.get("TR4MPASS_SIM", "") not in ("", "0", "off")
+
+# ───────────── engine helpers ─────────────
 def git_commit():
-    try:
-        return subprocess.run(["git", "-C", ENGINE_DIR, "log", "-1", "--format=%h %s"],
-                              capture_output=True, text=True, timeout=5).stdout.strip()
-    except Exception:
-        return ""
+    rc, out = _cmd(["git", "-C", ENGINE_DIR, "log", "-1", "--format=%h %s"], timeout=5)
+    return out.strip() if rc == 0 else ""
 
 def engine_version():
-    try:
-        out = subprocess.run([BIN, "--help"], capture_output=True, text=True, timeout=10).stdout
-        m = re.search(r"tr4mpass v([0-9.]+)", out)
-        return m.group(1) if m else "unknown"
-    except Exception:
+    if not (os.path.isfile(BIN) and os.access(BIN, os.X_OK)):
         return ""
+    rc, out = _cmd([BIN, "--help"], timeout=10)
+    m = re.search(r"tr4mpass v([0-9.]+)", out or "")
+    return m.group(1) if m else ""
 
 def missing_libs():
-    try:
-        out = subprocess.run(["ldd", BIN], capture_output=True, text=True, timeout=5).stdout
-        return [l.strip() for l in out.splitlines() if "not found" in l]
-    except Exception:
+    if not os.path.isfile(BIN):
         return []
+    rc, out = _cmd(["ldd", BIN], timeout=5)
+    return [l.strip() for l in out.splitlines() if "not found" in l]
 
 def usb_apple_count():
-    for cmd in (["lsusb"],):
-        if shutil.which(cmd[0]):
-            try:
-                out = subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout.lower()
-                return sum(1 for l in out.splitlines() if "apple" in l)
-            except Exception:
-                return 0
-    return 0
+    rc, out = _cmd(["lsusb"], timeout=5)
+    return sum(1 for l in out.lower().splitlines() if "apple" in l)
 
 def state():
     exists = os.path.isfile(BIN) and os.access(BIN, os.X_OK)
-    return {
-        "engine_dir": ENGINE_DIR,
-        "binary": BIN,
-        "exists": exists,
-        "version": engine_version() if exists else "",
-        "commit": git_commit(),
-        "missing_libs": missing_libs() if exists else [],
-        "usb_apple": usb_apple_count(),
-        "modes": list(MODES.keys()),
-        "platform": sys.platform,
-    }
+    return {"engine_dir": ENGINE_DIR, "binary": BIN, "exists": exists,
+            "version": engine_version() if exists else "", "commit": git_commit(),
+            "missing_libs": missing_libs() if exists else [], "usb_apple": usb_apple_count(),
+            "modes": list(MODES.keys()), "platform": sys.platform,
+            "sim": sim_enabled(), "sim_state": sim_state() or ""}
+
+DEV_CACHE = {"t": 0.0, "v": None}
+
+def probe_device(force=False):
+    now = time.time()
+    if not force and DEV_CACHE["v"] is not None and now - DEV_CACHE["t"] < 2.0:
+        return DEV_CACHE["v"]
+
+    if sim_enabled():
+        st = SIM_STATES.get(sim_state() or "no_device")
+        if st:
+            res = {"connected": True, "mode": st["mode"], "fields": st["fields"],
+                   "simulated": True, "chip": chip_name(st["fields"].get("CPID", "")),
+                   "name": NAMES.get(st["fields"].get("Product Type", ""), ""),
+                   "backends": [{"backend": "simulator", "ok": True, "note": st["mode"]}]}
+        else:
+            res = {"connected": False, "mode": "", "fields": {}, "simulated": True,
+                   "error": "no device (sim)", "backends": [{"backend": "simulator", "ok": False, "note": "no_device"}]}
+        DEV_CACHE.update(t=now, v=res)
+        BUS.publish("device", connected=res["connected"], name=res.get("name", ""), mode=res.get("mode", ""))
+        return res
+
+    result = {"connected": False, "mode": "", "fields": {}, "error": "", "simulated": False,
+              "backends": [], "chip": "", "name": ""}
+    if not (os.path.isfile(BIN) and os.access(BIN, os.X_OK)):
+        result["error"] = "engine missing"
+        DEV_CACHE.update(t=now, v=result)
+        return result
+
+    rc, out = _cmd([BIN, "-d"], timeout=25)
+    result["backends"] = detect_backends()
+    if "--- Device Information ---" in out:
+        result["connected"] = True
+        for line in out.splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                k = k.strip()
+                if k and not k.startswith("[") and len(k) < 30:
+                    result["fields"][k] = v.strip()
+        result["mode"] = "DFU" if ("DFU" in out and "No DFU device" not in out) else "عادي"
+        result["chip"] = chip_name(result["fields"].get("CPID", ""))
+        result["name"] = NAMES.get(result["fields"].get("Product Type", ""), "")
+    else:
+        low = out.lower()
+        result["error"] = "no device" if ("no devices found" in low or "no device detected" in low) else "unknown"
+
+    DEV_CACHE.update(t=now, v=result)
+    BUS.publish("device", connected=result["connected"], name=result.get("name", ""), mode=result.get("mode", ""))
+    return result
+
+# ───────────── usbipd ─────────────
+def usbipd_path():
+    for c in (r"C:\Program Files\usbipd-win\usbipd.exe",):
+        if os.path.isfile(c):
+            return c
+    rc, _ = _cmd(["where", "usbipd"], timeout=5) if sys.platform == "win32" else (127, "")
+    if rc == 0:
+        return "usbipd"
+    if shutil.which("usbipd.exe") or shutil.which("usbipd"):
+        return "usbipd.exe" if shutil.which("usbipd.exe") else "usbipd"
+    return None
+
+def wsl_distro():
+    rc, out = _cmd(["wsl.exe", "-e", "bash", "-lc", "echo $WSL_DISTRO_NAME"], timeout=15)
+    return out.strip() if rc == 0 else ""
+
+def do_attach():
+    p = usbipd_path()
+    if not p:
+        BUS.publish("attach", ok=False, reason="usbipd غير مثبت")
+        return {"ok": False, "reason": "usbipd غير مثبت", "steps": []}
+    steps = []
+    rc, out = _cmd([p, "list"], timeout=20)
+    busids = [l.split()[0] for l in out.splitlines() if "apple" in l.lower() and l.split()]
+    steps.append({"cmd": "list", "rc": rc, "apple": busids})
+    if not busids:
+        BUS.publish("attach", ok=False, reason="ما فيه جهاز آبل في ويندوز")
+        return {"ok": False, "reason": "ما فيه جهاز آبل في ويندوز", "steps": steps, "raw": out}
+    busid = busids[0]
+    d = wsl_distro()
+    for cmd in ([p, "bind", "--busid", busid],
+                [p, "attach", "--wsl"] + (["--distribution", d] if d else []) + ["--busid", busid]):
+        rc, out = _cmd(cmd, timeout=40)
+        steps.append({"cmd": " ".join(cmd[1:]), "rc": rc, "out": out[:200]})
+    rc, out = _cmd([p, "list"], timeout=20)
+    attached = any(busid in l and "attached" in l.lower() for l in out.splitlines())
+    steps.append({"cmd": "list-after", "rc": rc, "attached": attached})
+    BUS.publish("attach", ok=attached, busid=busid, distro=d)
+    return {"ok": attached, "busid": busid, "distro": d, "steps": steps}
+
+def do_detach():
+    p = usbipd_path()
+    if not p:
+        return {"ok": False, "reason": "usbipd غير مثبت"}
+    rc, out = _cmd([p, "list"], timeout=20)
+    busids = [l.split()[0] for l in out.splitlines() if "apple" in l.lower() and l.split()]
+    if not busids:
+        return {"ok": False, "reason": "ما فيه جهاز"}
+    rc, out = _cmd([p, "detach", "--busid", busids[0]], timeout=30)
+    BUS.publish("detach", ok=rc == 0, busid=busids[0])
+    return {"ok": rc == 0, "busid": busids[0], "out": out[:200]}
+
+# ───────────── diagnostics ─────────────
+def diag():
+    items = []
+    def add(key, label, status, detail, fix=""):
+        items.append({"key": key, "label": label, "status": status, "detail": detail, "fix": fix})
+
+    st = state()
+    add("engine", "محرك الفتح", "ok" if st["exists"] else "fail",
+        ("موجود · v" + st["version"]) if st["exists"] else "غير موجود: " + BIN,
+        "" if st["exists"] else "شغّل justmgz.exe بصلاحيات مسؤول لين يبنيه")
+
+    add("libs", "مكتبات النظام", "ok" if not st["missing_libs"] else "fail",
+        "كلها موجودة" if not st["missing_libs"] else "%d ناقصة" % len(st["missing_libs"]))
+
+    add("python", "بايثون", "ok", sys.version.split()[0])
+
+    if sim_enabled():
+        add("sim", "وضع المحاكاة", "warn", "مفعّل — كل النتائج تجريبية", "أطفئه بـ TR4MPASS_SIM=0")
+
+    be = detect_backends()
+    names = {"pyusb": "USB مباشر", "pnp": "تعريف ويندوز", "usbipd": "تمرير USB",
+             "pymobiledevice3": "pymobiledevice3", "libimobiledevice": "libimobiledevice"}
+    for b in be:
+        add(b["backend"], names.get(b["backend"], b["backend"]),
+            "ok" if b["ok"] else ("warn" if b.get("note") else "fail"),
+            b.get("note") or ("وجد جهاز" if b["ok"] else "ما وجد جهاز"),
+            "" if b["ok"] else "شغّل justmgz.exe بصلاحيات مسؤول، وتأكد من الكيبل و Trust")
+
+    d = probe_device(force=True)
+    if d["connected"]:
+        f = d["fields"]
+        add("read", "قراءة الجهاز", "ok",
+            "%s · %s · iOS %s" % (f.get("Device Name", "?"), f.get("Product Type", "?"), f.get("iOS Version", "?")))
+    else:
+        add("read", "قراءة الجهاز", "fail", "المحرك ما قرأ جهاز",
+            "افتح شاشة الجهاز واضغط Trust، ثم أعد الفحص")
+
+    add("panel", "لوحة التحكم", "ok", "تعمل على المنفذ %d" % PORT)
+    return {"ok": all(i["status"] in ("ok", "unknown", "warn") for i in items), "items": items}
+
+# ───────────── HTTP ─────────────
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _text(self, txt, ctype="text/plain; charset=utf-8"):
+        body = txt.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _sse_open(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.wfile.flush()
+
+    def _sse_loop(self):
+        q = BUS.subscribe(replay=0)
+        try:
+            self.wfile.write(b": connected\n\n"); self.wfile.flush()
+            last = time.time()
+            while True:
+                try:
+                    ev = q.get(timeout=15)
+                    self.wfile.write(("data: " + json.dumps(ev, ensure_ascii=False) + "\n\n").encode())
+                    self.wfile.flush()
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n"); self.wfile.flush()
+                if time.time() - last > 3600:
+                    break
+        except Exception:
+            pass
+        finally:
+            BUS.unsubscribe(q)
+            self.close_connection = True
+
+    def do_GET(self):
+        p = self.path.split("?")[0]
+        if p in ("/", "/index.html"):
+            return self._text(BUILTIN_HTML, "text/html; charset=utf-8")
+        if p == "/health":
+            return self._text("ok")
+        if p == "/api/state":
+            return self._json(state())
+        if p == "/api/device":
+            return self._json(probe_device())
+        if p == "/api/diag":
+            return self._json(diag())
+        if p == "/api/usbipd":
+            up = usbipd_path()
+            rc, out = _cmd([up, "list"], timeout=20) if up else (127, "")
+            return self._json({"installed": bool(up), "path": up, "list": out})
+        if p == "/api/sim":
+            return self._json({"enabled": sim_enabled(), "state": sim_state() or "", "states": list(SIM_STATES)})
+        if p == "/api/routes":
+            return self._json({"get": ["/", "/health", "/api/state", "/api/device", "/api/diag",
+                                      "/api/usbipd", "/api/sim", "/api/routes", "/api/events", "/api/log-stream"],
+                               "post": ["/api/run", "/api/attach", "/api/detach", "/api/sim", "/api/build"]})
+        if p in ("/api/events", "/api/log-stream"):
+            self._sse_open()
+            return self._sse_loop()
+        self._json({"error": "not found", "path": p}, 404)
+
+    def do_POST(self):
+        p = self.path.split("?")[0]
+        q = self.path.split("?", 1)[1] if "?" in self.path else ""
+        params = dict(x.split("=", 1) for x in q.split("&") if "=" in x)
+
+        if p == "/api/run":
+            mode = params.get("mode", "")
+            if mode not in MODES:
+                return self._json({"error": "unknown mode"}, 400)
+            return self.stream_run(MODES[mode], mode)
+
+        if p == "/api/attach":
+            res = do_attach(); DEV_CACHE["v"] = None
+            return self._json(res)
+
+        if p == "/api/detach":
+            return self._json(do_detach())
+
+        if p == "/api/sim":
+            s = params.get("state", "")
+            if s in SIM_STATES:
+                os.environ["TR4MPASS_SIM"] = s
+                DEV_CACHE["v"] = None
+                BUS.publish("sim", state=s)
+                return self._json({"ok": True, "state": s})
+            if s in ("off", "0"):
+                os.environ["TR4MPASS_SIM"] = "0"
+                DEV_CACHE["v"] = None
+                return self._json({"ok": True, "state": "off"})
+            return self._json({"error": "unknown state", "states": list(SIM_STATES)}, 400)
+
+        if p == "/api/build":
+            BUS.publish("build", phase="start")
+            rc, out = _cmd(["make", "-j4"], timeout=900)
+            BUS.publish("build", phase="done", rc=rc)
+            return self._json({"rc": rc, "out": out[-2000:]})
+
+        self._json({"error": "not found"}, 404)
+
+    def stream_run(self, args, mode):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        t0 = time.time()
+        errors = 0
+        BUS.publish("run", phase="start", mode=mode)
+        head = "[cmd] %s %s\n" % (BIN, " ".join(args))
+        self.wfile.write(head.encode()); self.wfile.flush()
+
+        if sim_enabled():
+            st = SIM_STATES.get(sim_state() or "no_device")
+            lines = ["[SIM] محاكاة — ليست قراءة حقيقية"]
+            if st:
+                lines += ["[INFO] mode: " + st["mode"],
+                          "[SIM] %s · %s" % (st["fields"].get("Product Type"), st["fields"].get("CPID")),
+                          "[SIM] تحليل فقط — لا يوجد فتح فعلي"]
+            else:
+                lines += ["[ERROR] No devices found (sim)"]
+                errors += 1
+            for ln in lines:
+                self.wfile.write((ln + "\n").encode()); self.wfile.flush()
+                BUS.publish("log", line=ln)
+                time.sleep(0.15)
+            rc = 0
+        else:
+            try:
+                p = subprocess.Popen([BIN] + args, cwd=ENGINE_DIR, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True, bufsize=1)
+                deadline = time.time() + 900
+                for line in p.stdout:
+                    if "[ERROR]" in line:
+                        errors += 1
+                    self.wfile.write(line.encode()); self.wfile.flush()
+                    BUS.publish("log", line=line.rstrip())
+                    if time.time() > deadline:
+                        p.kill(); break
+                rc = p.wait()
+            except Exception as e:
+                msg = "[bridge-error] %s\n" % e
+                self.wfile.write(msg.encode()); self.wfile.flush()
+                rc, errors = -1, errors + 1
+
+        secs = round(time.time() - t0, 1)
+        verdict = "fail" if errors else ("ok" if rc == 0 else "fail")
+        if sim_enabled():
+            verdict = "sim"
+        meta = {"rc": rc, "errors": errors, "seconds": secs, "verdict": verdict, "simulated": sim_enabled()}
+        BUS.publish("run", phase="done", mode=mode, **meta)
+        self.wfile.write(("\n" + json.dumps({"__meta__": meta}) + "\n").encode()); self.wfile.flush()
+
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
 
 BUILTIN_HTML = r"""<!doctype html>
 <html lang="ar" dir="rtl">
@@ -143,6 +585,18 @@ body{
 .di .l{font-size:13.5px;font-weight:700;line-height:1.4}
 .di .d{font-size:12px;color:var(--mut);line-height:1.5}
 .di .fx{font-size:12px;color:#f5c66b;line-height:1.5;margin-top:2px}
+
+
+.live{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--mut);
+  margin-inline-start:8px}
+.live .d{width:7px;height:7px;border-radius:50%;background:#6b7280}
+.live.on .d{background:var(--ok);box-shadow:0 0 0 3px rgba(52,211,153,.18)}
+.btn2{font-size:12.5px;padding:9px 12px;border-radius:10px;border:1px solid var(--line);
+  background:#0b1219;color:var(--txt);font-family:inherit;font-weight:700;cursor:pointer}
+.btn2:hover{border-color:#2a6b8a}
+.simbar{display:none;margin:0 0 12px;padding:10px 12px;border-radius:12px;font-size:12.5px;
+  background:#221c0e;border:1px solid #5c4a1c;color:#f3d9a4}
+.simbar.on{display:block}
 
 .dev{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--line);
   border-radius:16px;padding:14px 16px;margin:0 0 14px;transition:border-color .2s}
@@ -216,6 +670,8 @@ footer{margin-top:var(--s5);padding-top:var(--s3);border-top:1px solid var(--lin
     <div class="state" id="state"><span class="dot"></span><span id="stateTxt">جاري الفحص…</span></div>
   </div>
 
+  <div class="simbar" id="simbar">وضع المحاكاة مفعّل — كل الأرقام تجريبية ولا تعني قراءة جهاز حقيقي.</div>
+
   <div class="dev off" id="dev">
     <span class="st"></span>
     <div class="t">
@@ -223,6 +679,11 @@ footer{margin-top:var(--s5);padding-top:var(--s3);border-top:1px solid var(--lin
       <span id="devSub">وصّل الآيفون بالكيبل — يكشفه لحاله</span>
     </div>
     <span class="mode" id="devMode">—</span>
+  </div>
+  <div style="display:flex;gap:8px;margin:-6px 0 14px">
+    <button class="btn2" id="attachBtn" type="button">تمرير الجهاز الآن</button>
+    <button class="btn2" id="detachBtn" type="button">فصل</button>
+    <span class="live" id="live"><span class="d"></span>بث حي</span>
   </div>
 
   <div class="card" id="diagCard">
@@ -476,6 +937,42 @@ function devPoll(){
 
 devPoll(); setInterval(devPoll, 3000);
 
+// ---- SSE live events ----
+(function(){
+  var live=document.getElementById("live");
+  function setLive(on){ live.className="live"+(on?" on":""); }
+  try{
+    var es=new EventSource("/api/events");
+    es.onopen=function(){ setLive(true); };
+    es.onerror=function(){ setLive(false); };
+    es.onmessage=function(m){
+      var ev; try{ ev=JSON.parse(m.data); }catch(e){ return; }
+      if(ev.kind==="device"){ devPoll(); }
+      if(ev.kind==="attach"){ devPoll(); runDiag(); }
+    };
+  }catch(e){ setLive(false); }
+})();
+
+document.getElementById("attachBtn").addEventListener("click", function(){
+  var b=this; b.disabled=true; b.textContent="جاري التمرير...";
+  fetch("/api/attach",{method:"POST"}).then(function(r){return r.json()})
+    .then(function(d){
+      b.textContent = d.ok ? "تم التمرير" : "ما تم — شوف الفحص";
+      devPoll(); runDiag();
+    })
+    .catch(function(){ b.textContent="فشل"; })
+    .then(function(){ setTimeout(function(){ b.disabled=false; b.textContent="تمرير الجهاز الآن"; },2500); });
+});
+
+document.getElementById("detachBtn").addEventListener("click", function(){
+  fetch("/api/detach",{method:"POST"}).then(function(){ devPoll(); });
+});
+
+fetch("/api/state").then(function(r){return r.json()}).then(function(s){
+  if(s.sim){ document.getElementById("simbar").className="simbar on"; }
+});
+
+
 function diagRender(items){
   var box=document.getElementById("diagList");
   box.innerHTML="";
@@ -512,262 +1009,26 @@ refreshState().catch(function(){ verdict("err","الجسر ما اشتغل","ت�
 </html>
 """
 
-
-DEV_CACHE = {"t": 0.0, "v": None}
-
-def probe_device(force=False):
-    now = time.time()
-    if not force and DEV_CACHE["v"] is not None and now - DEV_CACHE["t"] < 2.0:
-        return DEV_CACHE["v"]
-    result = {"connected": False, "mode": "", "fields": {}, "error": ""}
-    if not (os.path.isfile(BIN) and os.access(BIN, os.X_OK)):
-        result["error"] = "engine missing"
-        DEV_CACHE.update(t=now, v=result)
-        return result
-    try:
-        p = subprocess.run([BIN, "-d"], cwd=ENGINE_DIR, capture_output=True, text=True, timeout=25)
-        out = (p.stdout or "") + (p.stderr or "")
-    except Exception as e:
-        result["error"] = str(e)
-        DEV_CACHE.update(t=now, v=result)
-        return result
-
-    if "--- Device Information ---" in out:
-        result["connected"] = True
-        for line in out.splitlines():
-            if ":" in line:
-                k, v = line.split(":", 1)
-                k = k.strip()
-                if k and not k.startswith("[") and len(k) < 30:
-                    result["fields"][k] = v.strip()
-        result["mode"] = "DFU" if ("DFU" in out and "No DFU device" not in out) else "عادي"
-    else:
-        low = out.lower()
-        if "no devices found" in low or "no device detected" in low:
-            result["error"] = "no device"
-        else:
-            result["error"] = "unknown"
-
-    DEV_CACHE.update(t=now, v=result)
-    return result
-
-
-def _cmd(args, timeout=25):
-    try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
-    except FileNotFoundError:
-        return 127, "not found: %s" % args[0]
-    except Exception as ex:
-        return 1, str(ex)
-
-def diag():
-    items = []
-    def add(key, label, status, detail, fix=""):
-        items.append({"key": key, "label": label, "status": status, "detail": detail, "fix": fix})
-
-    # 1 engine
-    exists = os.path.isfile(BIN) and os.access(BIN, os.X_OK)
-    add("engine", "محرك الفتح", "ok" if exists else "fail",
-        ("موجود · v" + engine_version()) if exists else "غير موجود: " + BIN,
-        "" if exists else "شغّل justmgz.exe بصلاحيات مسؤول لين يبنيه")
-
-    # 2 libs
-    miss = missing_libs() if exists else []
-    add("libs", "مكتبات النظام", "ok" if not miss else "fail",
-        "كلها موجودة" if not miss else "%d ناقصة" % len(miss),
-        "" if not miss else "أعد تشغيل justmgz.exe")
-
-    # 3 python
-    add("python", "بايثون داخل أوبنتو", "ok", sys.version.split()[0])
-
-    # 4 usbipd (windows interop)
-    rc, out = _cmd(["usbipd.exe", "list"])
-    if rc == 127:
-        add("usbipd", "أداة تمرير USB", "fail", "usbipd غير مثبت",
-            "شغّل justmgz.exe بصلاحيات مسؤول — يثبته تلقائياً")
-    else:
-        has_apple = "apple" in out.lower()
-        add("usbipd", "أداة تمرير USB", "ok" if rc == 0 else "warn",
-            ("تعمل · " + ("تشوف آيفون" if has_apple else "ما تشوف آيفون")) if rc == 0 else "خطأ في التشغيل",
-            "" if has_apple else "وصّل الآيفون بكيبل أصلي وشغّل justmgz.exe من جديد")
-
-    # 5 windows driver
-    ps = ("Get-PnpDevice -PresentOnly | Where-Object { $_.FriendlyName -match 'Apple' } "
-          "| Select-Object -First 3 Status,FriendlyName | Out-String")
-    rc2, out2 = _cmd(["powershell.exe", "-NoProfile", "-Command", ps])
-    if rc2 == 127:
-        add("driver", "درايفر آبل في ويندوز", "unknown", "ما قدرنا نستعلم", "")
-    elif out2.strip() and "Apple" in out2:
-        add("driver", "درايفر آبل في ويندوز", "ok", out2.strip().splitlines()[-1].strip()[:80])
-    else:
-        add("driver", "درايفر آبل في ويندوز", "fail", "ويندوز ما يتعرف على أي جهاز آبل",
-            "نزّل تطبيق Apple Devices من Microsoft Store (يثبت الدرايفر) ثم أعد التوصيل")
-
-    # 6 lsusb
-    rc3, out3 = _cmd(["lsusb"])
-    apple_in_wsl = "apple" in out3.lower()
-    add("lsusb", "الجهاز داخل أوبنتو", "ok" if apple_in_wsl else "fail",
-        "آيفون ظاهر" if apple_in_wsl else "ما فيه جهاز آبل",
-        "" if apple_in_wsl else "شغّل justmgz.exe بصلاحيات مسؤول — يمرر الجهاز تلقائياً")
-
-    # 7 engine read
-    d = probe_device(force=True)
-    if d["connected"]:
-        f = d["fields"]
-        add("read", "قراءة الجهاز", "ok",
-            "%s · %s · iOS %s" % (f.get("Device Name", "?"), f.get("Product Type", "?"), f.get("iOS Version", "?")))
-    else:
-        add("read", "قراءة الجهاز", "fail", "المحرك ما قرأ جهاز",
-            "افتح شاشة الجهاز واضغط Trust، وبعدها أعد الفحص")
-
-    # 8 panel
-    add("panel", "لوحة التحكم", "ok", "تعمل على المنفذ %d" % PORT)
-
-    return {"ok": all(i["status"] in ("ok", "unknown") for i in items), "items": items}
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def log_message(self, fmt, *args):
-        sys.stderr.write("  %s\n" % (fmt % args))
-
-    def _json(self, obj, code=200):
-        body = json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _file(self, path, ctype):
-        with open(path, "rb") as f:
-            body = f.read()
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        if self.path.startswith("/api/state"):
-            return self._json(state())
-        if self.path.startswith("/api/diag"):
-            return self._json(diag())
-        if self.path.startswith("/api/device"):
-            return self._json(probe_device())
-        if self.path.startswith("/health"):
-            body = b"ok"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if self.path in ("/", "/index.html"):
-            page = os.path.join(BASE, "ui.html")
-            try:
-                ok = os.path.isfile(page) and os.path.getsize(page) > 500
-            except OSError:
-                ok = False
-            if not ok:
-                body = BUILTIN_HTML.encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("X-Justmgz-Page", "builtin")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            return self._file(page, "text/html; charset=utf-8")
-        self._json({"error": "not found"}, 404)
-
-    def do_POST(self):
-        if not self.path.startswith("/api/run"):
-            return self._json({"error": "not found"}, 404)
-        q = self.path.split("?", 1)[1] if "?" in self.path else ""
-        mode = ""
-        for part in q.split("&"):
-            if part.startswith("mode="):
-                mode = part[5:]
-        if mode not in MODES:
-            return self._json({"error": "unknown mode"}, 400)
-        self.stream_run(MODES[mode])
-
-    def stream_run(self, args):
-        st = state()
-        if not st["exists"]:
-            return self._json({"error": "engine_missing", "detail": st}, 409)
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Accel-Buffering", "no")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.close_connection = True
-
-        t0 = time.time()
-        self.wfile.write(("[cmd] %s\n" % " ".join([BIN] + args)).encode()); self.wfile.flush()
-
-        env = dict(os.environ)
-        env.setdefault("LC_ALL", "C.UTF-8")
-        errors = 0
-        try:
-            p = subprocess.Popen([BIN] + args, cwd=ENGINE_DIR, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
-            deadline = time.time() + 600
-            for line in p.stdout:
-                if time.time() > deadline:
-                    p.kill(); break
-                if "[ERROR]" in line or "error" in line.lower() and "0 error" not in line.lower():
-                    if "[ERROR]" in line:
-                        errors += 1
-                self.wfile.write(line.encode()); self.wfile.flush()
-            rc = p.wait()
-        except Exception as e:
-            self.wfile.write(("[bridge-error] %s\n" % e).encode()); self.wfile.flush()
-            rc, errors = -1, errors + 1
-
-        secs = round(time.time() - t0, 1)
-        # حكم صادق مبني على المخرجات لا على رمز الخروج (المحرك يرجع 0 حتى عند الفشل)
-        verdict = "fail" if errors else ("ok" if rc == 0 else "fail")
-        meta = {"__meta__": {"rc": rc, "errors": errors, "seconds": secs, "verdict": verdict}}
-        self.wfile.write(("\n" + json.dumps(meta) + "\n").encode()); self.wfile.flush()
-
-class Server(socketserver.ThreadingTCPServer):
-    allow_reuse_address = True
-    daemon_threads = True
-
 if __name__ == "__main__":
     st = state()
     print("=" * 56)
-    print("  justmgz · bridge to tr4mpass engine")
-    print("  engine:", st["binary"])
-    print("  status:", "FOUND v" + st["version"] if st["exists"] else "MISSING")
-    print("  commit:", st["commit"] or "-")
-    print("  http://127.0.0.1:%d" % PORT)
+    print("  justmgz bridge v3")
+    print("  engine:", st["binary"], "| v" + st["version"] if st["exists"] else "| missing")
+    print("  sim   :", "ON (%s)" % (st["sim_state"] or "-") if st["sim"] else "off")
+    print("  http  : http://127.0.0.1:%d" % PORT)
     print("=" * 56)
-    if len(sys.argv) > 1 and sys.argv[1] == "--open":
-        threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:%d" % PORT)).start()
     try:
         srv = Server(("127.0.0.1", PORT), Handler)
-    except OSError as e:
-        # المنفذ مشغول: لو فيه نسخة شغالة فعلاً، نطلع بهدوء
+    except OSError:
         import urllib.request
         try:
-            with urllib.request.urlopen("http://127.0.0.1:%d/api/state" % PORT, timeout=3) as r:
-                if r.status == 200:
-                    print("  already running on port %d -- using existing instance" % PORT)
-                    raise SystemExit(0)
+            urllib.request.urlopen("http://127.0.0.1:%d/api/state" % PORT, timeout=3)
+            print("  already running")
+            raise SystemExit(0)
         except SystemExit:
             raise
-        except Exception:
-            print("  port %d busy by another program: %s" % (PORT, e))
+        except Exception as e:
+            print("  port busy:", e)
             raise SystemExit(2)
     with srv:
         srv.serve_forever()

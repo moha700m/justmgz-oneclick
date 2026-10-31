@@ -63,6 +63,18 @@ body{
 .di .d{font-size:12px;color:var(--mut);line-height:1.5}
 .di .fx{font-size:12px;color:#f5c66b;line-height:1.5;margin-top:2px}
 
+
+.live{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--mut);
+  margin-inline-start:8px}
+.live .d{width:7px;height:7px;border-radius:50%;background:#6b7280}
+.live.on .d{background:var(--ok);box-shadow:0 0 0 3px rgba(52,211,153,.18)}
+.btn2{font-size:12.5px;padding:9px 12px;border-radius:10px;border:1px solid var(--line);
+  background:#0b1219;color:var(--txt);font-family:inherit;font-weight:700;cursor:pointer}
+.btn2:hover{border-color:#2a6b8a}
+.simbar{display:none;margin:0 0 12px;padding:10px 12px;border-radius:12px;font-size:12.5px;
+  background:#221c0e;border:1px solid #5c4a1c;color:#f3d9a4}
+.simbar.on{display:block}
+
 .dev{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--line);
   border-radius:16px;padding:14px 16px;margin:0 0 14px;transition:border-color .2s}
 .dev.on{border-color:#1c5c45;background:#0d2119}
@@ -135,6 +147,8 @@ footer{margin-top:var(--s5);padding-top:var(--s3);border-top:1px solid var(--lin
     <div class="state" id="state"><span class="dot"></span><span id="stateTxt">جاري الفحص…</span></div>
   </div>
 
+  <div class="simbar" id="simbar">وضع المحاكاة مفعّل — كل الأرقام تجريبية ولا تعني قراءة جهاز حقيقي.</div>
+
   <div class="dev off" id="dev">
     <span class="st"></span>
     <div class="t">
@@ -142,6 +156,11 @@ footer{margin-top:var(--s5);padding-top:var(--s3);border-top:1px solid var(--lin
       <span id="devSub">وصّل الآيفون بالكيبل — يكشفه لحاله</span>
     </div>
     <span class="mode" id="devMode">—</span>
+  </div>
+  <div style="display:flex;gap:8px;margin:-6px 0 14px">
+    <button class="btn2" id="attachBtn" type="button">تمرير الجهاز الآن</button>
+    <button class="btn2" id="detachBtn" type="button">فصل</button>
+    <span class="live" id="live"><span class="d"></span>بث حي</span>
   </div>
 
   <div class="card" id="diagCard">
@@ -394,6 +413,42 @@ function devPoll(){
 }
 
 devPoll(); setInterval(devPoll, 3000);
+
+// ---- SSE live events ----
+(function(){
+  var live=document.getElementById("live");
+  function setLive(on){ live.className="live"+(on?" on":""); }
+  try{
+    var es=new EventSource("/api/events");
+    es.onopen=function(){ setLive(true); };
+    es.onerror=function(){ setLive(false); };
+    es.onmessage=function(m){
+      var ev; try{ ev=JSON.parse(m.data); }catch(e){ return; }
+      if(ev.kind==="device"){ devPoll(); }
+      if(ev.kind==="attach"){ devPoll(); runDiag(); }
+    };
+  }catch(e){ setLive(false); }
+})();
+
+document.getElementById("attachBtn").addEventListener("click", function(){
+  var b=this; b.disabled=true; b.textContent="جاري التمرير...";
+  fetch("/api/attach",{method:"POST"}).then(function(r){return r.json()})
+    .then(function(d){
+      b.textContent = d.ok ? "تم التمرير" : "ما تم — شوف الفحص";
+      devPoll(); runDiag();
+    })
+    .catch(function(){ b.textContent="فشل"; })
+    .then(function(){ setTimeout(function(){ b.disabled=false; b.textContent="تمرير الجهاز الآن"; },2500); });
+});
+
+document.getElementById("detachBtn").addEventListener("click", function(){
+  fetch("/api/detach",{method:"POST"}).then(function(){ devPoll(); });
+});
+
+fetch("/api/state").then(function(r){return r.json()}).then(function(s){
+  if(s.sim){ document.getElementById("simbar").className="simbar on"; }
+});
+
 
 function diagRender(items){
   var box=document.getElementById("diagList");
