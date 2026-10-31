@@ -502,6 +502,7 @@ function runDiag(){
 
 document.getElementById("diagBtn").addEventListener("click", runDiag);
 runDiag();
+setInterval(runDiag, 15000);
 
 
 S.el.start.addEventListener("click", start);

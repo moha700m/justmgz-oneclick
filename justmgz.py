@@ -4,6 +4,10 @@ No cmd scripting: everything runs through Python subprocess. English console,
 Arabic UI in the browser.
 """
 import ctypes, os, shutil, subprocess, sys, time, urllib.request, webbrowser
+try:
+    import webview  # pywebview: native window (WebView2)
+except Exception:
+    webview = None
 from pathlib import Path
 
 APP = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "app"
@@ -35,6 +39,14 @@ def write_diag():
     except Exception as e:
         log("  could not write diagnostic file: %s" % e)
         return ""
+
+def hide_console():
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)
+    except Exception:
+        pass
 
 def is_admin():
     try:
@@ -328,13 +340,30 @@ def main():
         return 1
 
     write_diag()
-    webbrowser.open("http://127.0.0.1:%d/" % PORT)
+    url = "http://127.0.0.1:%d/" % PORT
     log("")
     log("=" * 52)
-    log("  Panel is running:  http://127.0.0.1:%d" % PORT)
-    log("  KEEP THIS WINDOW OPEN - closing it stops the panel.")
+    log("  Opening the app window...")
     log("=" * 52)
-    log("")
+
+    if webview is not None:
+        hide_console()
+        try:
+            webview.create_window("justmgz", url, width=440, height=920,
+                                  min_size=(380, 620), background_color="#0A0E13")
+            webview.start()
+        except Exception as ex:
+            log("  window failed (%s) - opening in browser" % ex)
+            try:
+                ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 5)
+            except Exception:
+                pass
+            webbrowser.open(url)
+            input("  Press Enter to stop...")
+    else:
+        webbrowser.open(url)
+        log("  keep this window open - closing it stops the panel")
+        input("  Press Enter to stop...")
     try:
         for line in proc.stdout:
             print(line.rstrip())

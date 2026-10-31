@@ -21,10 +21,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install PyInstaller
-        run: pip install --quiet pyinstaller
+        run: pip install --quiet pyinstaller pywebview pythonnet
 
       - name: Build one-file exe
-        run: pyinstaller --onefile --noconfirm --clean --name justmgz --add-data "app;app" justmgz.py
+        run: pyinstaller --onefile --noconfirm --clean --name justmgz --add-data "app;app" --hidden-import=webview --collect-all webview justmgz.py
 
       - name: Smoke test (selftest)
         run: dist\justmgz.exe --selftest
