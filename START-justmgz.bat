@@ -121,8 +121,44 @@ echo    device attached (%BUSID%)
 echo.
 echo Step 5/5 - starting the panel
 wsl -u root -e bash -lc "fuser -k 8099/tcp 2>/dev/null; sleep 1; setsid nohup env TR4MPASS_DIR=/opt/justmgz/eng python3 /opt/justmgz/app/justmgz-engine.py > /tmp/justmgz.log 2>&1 < /dev/null &" >nul 2>&1
+if defined JUSTMGZ_SKIP_HEALTH goto open_browser
+
+set "HEALTH="
+wsl -u root -e bash -lc "curl -s -o /dev/null -w %%{http_code} http://127.0.0.1:8099/ > /tmp/justmgz-health.txt 2>/dev/null" >nul 2>&1
+for /f "usebackq delims=" %%h in (`wsl -u root -e cat /tmp/justmgz-health.txt 2^>nul`) do set "HEALTH=%%h"
+if not "%HEALTH%"=="200" goto panel_dead
+
 powershell -NoProfile -Command "$i=0; while($i -lt 12){ try{ $c=New-Object Net.Sockets.TcpClient('127.0.0.1',8099); $c.Close(); exit 0 }catch{ Start-Sleep -Milliseconds 500; $i++ } }; exit 1" >nul 2>&1
+if errorlevel 1 goto panel_forward
+
+:open_browser
 start "" "http://127.0.0.1:8099"
+goto banner_ok
+
+:panel_dead
+echo.
+echo   The panel did not start inside Ubuntu. Last lines of the log:
+echo   --------------------------------------------
+wsl -u root -e tail -n 20 /tmp/justmgz.log
+echo   --------------------------------------------
+echo   Full log:  wsl -u root cat /tmp/justmgz.log
+echo   Full check: double click DO-CHECK.bat
+echo.
+pause
+exit /b
+
+:panel_forward
+echo.
+echo   Panel runs inside Ubuntu, but Windows cannot reach port 8099.
+echo   This is a WSL network issue, not an install issue.
+echo     1. run: wsl --shutdown   then start again
+echo     2. turn off VPN / proxy temporarily
+echo     3. run: netsh winsock reset  then restart Windows
+echo.
+pause
+exit /b
+
+:banner_ok
 
 echo.
 call :line

@@ -40,6 +40,7 @@ jobs:
         shell: pwsh
         run: |
           $env:JUSTMGZ_NOELEV = "1"
+          $env:JUSTMGZ_SKIP_HEALTH = "1"
           $env:PATH = "$PWD\ci\bin;$env:PATH"
           cmd /c "START-justmgz.bat < nul" 2>&1 | Tee-Object -FilePath bat-out.txt
           "---- assertions ----"
@@ -55,6 +56,7 @@ jobs:
         shell: pwsh
         run: |
           $env:JUSTMGZ_NOELEV = "1"
+          $env:JUSTMGZ_SKIP_HEALTH = "1"
           $env:PATH = "$PWD\ci\bin;$env:PATH"
           cmd /c "RUN-justmgz.bat < nul" 2>&1 | Tee-Object -FilePath run-out.txt
           $out = Get-Content run-out.txt -Raw
